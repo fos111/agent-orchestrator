@@ -179,7 +179,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     provision_state, provision_error, provision_steps, branch_state, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, import_source
 FROM sessions WHERE id = ?
 `
 
@@ -256,6 +256,7 @@ type GetSessionRow struct {
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
 	RuntimeReleasedLaunchID          string
+	ImportSource                     string
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -334,6 +335,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.ClientRequestHash,
 		&i.ClientRequestCommitted,
 		&i.RuntimeReleasedLaunchID,
+		&i.ImportSource,
 	)
 	return i, err
 }
@@ -356,7 +358,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     provision_state, provision_error, provision_steps, branch_state, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, import_source
 FROM sessions WHERE automation_run_id = ?
 `
 
@@ -433,6 +435,7 @@ type GetSessionByAutomationRunIDRow struct {
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
 	RuntimeReleasedLaunchID          string
+	ImportSource                     string
 }
 
 func (q *Queries) GetSessionByAutomationRunID(ctx context.Context, automationRunID *domain.AutomationRunID) (GetSessionByAutomationRunIDRow, error) {
@@ -511,6 +514,7 @@ func (q *Queries) GetSessionByAutomationRunID(ctx context.Context, automationRun
 		&i.ClientRequestHash,
 		&i.ClientRequestCommitted,
 		&i.RuntimeReleasedLaunchID,
+		&i.ImportSource,
 	)
 	return i, err
 }
@@ -531,7 +535,7 @@ INSERT INTO sessions (
     requested_output,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
     provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
-    client_request_id, client_request_hash
+    client_request_id, client_request_hash, import_source
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
@@ -539,7 +543,7 @@ INSERT INTO sessions (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?
+    ?, ?, ?, ?
 )
 `
 
@@ -607,6 +611,7 @@ type InsertSessionParams struct {
 	AutomationLaunchCompleted        bool
 	ClientRequestID                  string
 	ClientRequestHash                string
+	ImportSource                     string
 }
 
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
@@ -674,6 +679,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.AutomationLaunchCompleted,
 		arg.ClientRequestID,
 		arg.ClientRequestHash,
+		arg.ImportSource,
 	)
 	return err
 }
@@ -696,7 +702,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     provision_state, provision_error, provision_steps, branch_state, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, import_source
 FROM sessions ORDER BY project_id, num
 `
 
@@ -773,6 +779,7 @@ type ListAllSessionsRow struct {
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
 	RuntimeReleasedLaunchID          string
+	ImportSource                     string
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -857,6 +864,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.ClientRequestHash,
 			&i.ClientRequestCommitted,
 			&i.RuntimeReleasedLaunchID,
+			&i.ImportSource,
 		); err != nil {
 			return nil, err
 		}
@@ -922,7 +930,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     provision_state, provision_error, provision_steps, branch_state, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, import_source
 FROM sessions WHERE project_id IS ? ORDER BY num
 `
 
@@ -999,6 +1007,7 @@ type ListSessionsByProjectRow struct {
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
 	RuntimeReleasedLaunchID          string
+	ImportSource                     string
 }
 
 func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.ProjectID) ([]ListSessionsByProjectRow, error) {
@@ -1083,6 +1092,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.ClientRequestHash,
 			&i.ClientRequestCommitted,
 			&i.RuntimeReleasedLaunchID,
+			&i.ImportSource,
 		); err != nil {
 			return nil, err
 		}
@@ -1843,7 +1853,7 @@ UPDATE sessions SET
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, effort = ?, updated_at = ?,
     is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?,
-    automation_launch_completed = ?
+    automation_launch_completed = ?, import_source = ?
 WHERE id = ?
 `
 
@@ -1896,6 +1906,7 @@ type UpdateSessionParams struct {
 	AutoInjectReview                 bool
 	AutoInjectCI                     bool
 	AutomationLaunchCompleted        bool
+	ImportSource                     string
 	ID                               domain.SessionID
 }
 
@@ -1949,6 +1960,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.AutoInjectReview,
 		arg.AutoInjectCI,
 		arg.AutomationLaunchCompleted,
+		arg.ImportSource,
 		arg.ID,
 	)
 	return err
