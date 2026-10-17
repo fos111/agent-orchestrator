@@ -36,6 +36,9 @@ var (
 	// ErrArtifactLimit means a commit would exceed a session's artifact file
 	// count or total size.
 	ErrArtifactLimit = errors.New("session artifact limit exceeded")
+	// ErrArtifactShareLimit means the user already holds their maximum number
+	// of active artifact share links.
+	ErrArtifactShareLimit = errors.New("artifact share limit reached")
 )
 
 type Store struct {
