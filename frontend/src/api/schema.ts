@@ -6377,7 +6377,6 @@ export interface components {
         };
         SessionImportPreview: {
             candidates: components["schemas"]["SessionImportCandidate"][];
-            truncated: boolean;
         };
         SessionImportRequest: {
             ids: string[];
