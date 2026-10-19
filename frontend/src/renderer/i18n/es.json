@@ -1,4 +1,9 @@
 {
+	"chat.path.copy": "Copiar ruta",
+	"chat.path.revealInFinder": "Mostrar en Finder",
+	"chat.path.revealInFileManager": "Mostrar en el gestor de archivos",
+	"chat.path.openWith": "Abrir con {{editor}}",
+	"chat.path.actionFailed": "No se pudo completar la acción de la ruta",
 	"session.generatingBranchName": "Generando nombre de rama",
 	"session.preparingBranch": "Preparando rama",
 	"session.initializingBranch": "Inicializando rama",
@@ -769,7 +774,7 @@
 	"inspector.openInSystemBrowser": "Abrir en el navegador del sistema",
 	"link.copy": "Copiar enlace",
 	"link.openInAOBrowser": "Abrir en el navegador de AO",
-	"link.openInFiles": "Abrir en Archivos",
+	"link.openInAO": "Abrir en AO",
 	"link.openInExternalBrowser": "Abrir en el navegador externo",
 	"inspector.openInlineComments": "{{count}} comentarios inline abiertos",
 	"inspector.requestRereviewPR": "Solicitar nueva revisión del PR",
