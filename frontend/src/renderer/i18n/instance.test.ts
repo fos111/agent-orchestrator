@@ -188,6 +188,31 @@ describe("app i18next instance", () => {
 		}
 	});
 
+	it("resolves every session graph label in every locale", () => {
+		const graphKeys = [
+			"shell.graph",
+			"shell.sessionsView",
+			"shell.showArchived",
+			"shell.hideArchived",
+			"shell.graphArchived",
+			"shell.graphArchivedContext",
+			"shell.graphZoomIn",
+			"shell.graphZoomOut",
+			"shell.graphZoomReset",
+			"shell.graphParent",
+			"shell.graphPullRequests",
+			"shell.worker",
+		] as const;
+		for (const locale of APP_LOCALES) {
+			const i18n = createAppI18n(locale);
+			for (const key of graphKeys) {
+				const value = i18n.t(key);
+				expect(value, `${locale}.${key}`).toBeTruthy();
+				expect(value, `${locale}.${key}`).not.toBe(key);
+			}
+		}
+	});
+
 	it("keeps interpolation variables aligned between locales", () => {
 		const variables = (message: string | string[]) => {
 			const msgs = Array.isArray(message) ? message : [message];
