@@ -38,6 +38,7 @@ import { BoardWelcome, ProjectBoardEmpty } from "./BoardEmptyStates";
 import { TopbarButton, topbarProjectLabelClass } from "./TopbarButton";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
+import { isArchivedSession } from "../lib/standalone-archive";
 import { demoBoardSessions } from "../lib/demo-board-sessions";
 import { isLinuxPlatform, isMacPlatform, usesBoardActionsInPanel } from "../lib/platform";
 import { cn } from "../lib/utils";
@@ -68,18 +69,6 @@ type SessionsBoardProps = {
 	projectId?: string;
 	hostId?: string;
 };
-
-
-// Live merged sessions remain in-flow. A terminated runtime is archived even
-// when its SCM outcome remains `merged`, which is exactly what the daemon's
-// `archive` column means.
-function isArchivedSession(session: WorkspaceSession): boolean {
-	return (
-		session.kanbanColumn === "archive" ||
-		session.isTerminated === true ||
-		session.status === "terminated"
-	);
-}
 
 const isMac = isMacPlatform();
 const dragStyle = isMac ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;

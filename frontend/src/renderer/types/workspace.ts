@@ -126,6 +126,8 @@ export type WorkspaceSession = {
 	/** Whether the daemon may automatically review this session after it becomes idle. */
 	autoReviewEnabled?: boolean;
 	kind?: SessionKind;
+	/** The same-project AO session that requested this spawn through `ao spawn`. */
+	parentSessionId?: string;
 	/**
 	 * Which controller is currently committed for this session. The session
 	 * surface renders from THIS value, never from the current creation default.
