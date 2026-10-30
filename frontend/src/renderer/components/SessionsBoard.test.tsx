@@ -149,6 +149,17 @@ function renderBoardWithClient(queryClient: QueryClient, projectId?: string) {
 	);
 }
 
+function renderBoardWithProps(props: Parameters<typeof SessionsBoard>[0]) {
+	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	return render(
+		<QueryClientProvider client={queryClient}>
+			<TooltipProvider>
+				<SessionsBoard {...props} />
+			</TooltipProvider>
+		</QueryClientProvider>,
+	);
+}
+
 /** Archive cards mount on the next frame via startTransition — wait for the list. */
 async function expandArchive() {
 	await userEvent.click(screen.getByRole("button", { name: /^Archive, \d+ sessions?$/ }));
@@ -1887,6 +1898,118 @@ describe("SessionsBoard artifacts", () => {
 
 		await screen.findByText("Fix the bug");
 		expect(screen.queryByTestId("board-session-artifacts")).not.toBeInTheDocument();
+	});
+
+	it("shows the view toggle for a project with callbacks and reports changes", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "orch", title: "Root orchestrator", status: "working", kind: "orchestrator" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		const onViewChange = vi.fn();
+		renderBoardWithProps({ projectId: "p1", view: "board", onViewChange });
+
+		expect(screen.getByRole("group", { name: "Sessions view" })).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Graph" }));
+		expect(onViewChange).toHaveBeenCalledWith("graph");
+		fireEvent.click(screen.getByRole("button", { name: "Board" }));
+		expect(onViewChange).toHaveBeenCalledWith("board");
+	});
+
+	it("renders the graph view without the board grid or archive panel", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "orch", title: "Root orchestrator", status: "working", kind: "orchestrator" }),
+					boardSession({ id: "w1", title: "Build graph", status: "working", kind: "worker", parentSessionId: "orch" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoardWithProps({
+			projectId: "p1",
+			view: "graph",
+			onViewChange: vi.fn(),
+			showArchived: false,
+			onShowArchivedChange: vi.fn(),
+		});
+
+		expect(screen.getByRole("button", { name: /Root orchestrator/ })).toBeInTheDocument();
+		expect(screen.queryByTestId("board-horizontal-scroll")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /^Archive, \d+ sessions?$/ })).not.toBeInTheDocument();
+	});
+
+	it("renders the board when no view is selected", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "w1", title: "Build graph", status: "working", kind: "worker" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoardWithProps({ projectId: "p1", onViewChange: vi.fn() });
+
+		expect(screen.getByTestId("board-horizontal-scroll")).toBeInTheDocument();
+	});
+
+	it("hides the view toggle without a project, callbacks, or on a cloud project", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "w1", title: "Build graph", status: "working", kind: "worker" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		const withoutProject = renderBoardWithProps({ onViewChange: vi.fn() });
+		expect(screen.queryByRole("group", { name: "Sessions view" })).not.toBeInTheDocument();
+		withoutProject.unmount();
+
+		const withoutCallbacks = renderBoardWithProps({ projectId: "p1" });
+		expect(screen.queryByRole("group", { name: "Sessions view" })).not.toBeInTheDocument();
+		withoutCallbacks.unmount();
+
+		workspaceQueryMock.mockReturnValue({
+			data: [{ ...workspaceWithSessions([]), kind: "cloud" }],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoardWithProps({ projectId: "p1", onViewChange: vi.fn() });
+		expect(screen.queryByRole("group", { name: "Sessions view" })).not.toBeInTheDocument();
+	});
+
+	it("opens a graph session with the existing session target", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "orch", title: "Root orchestrator", status: "working", kind: "orchestrator" }),
+					boardSession({ id: "w1", title: "Build graph", status: "working", kind: "worker", parentSessionId: "orch" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoardWithProps({
+			projectId: "p1",
+			view: "graph",
+			onViewChange: vi.fn(),
+			onShowArchivedChange: vi.fn(),
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: /Build graph/ }));
+
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "p1", sessionId: "w1" },
+		});
 	});
 });
 

@@ -55,6 +55,8 @@ import { useShellMaybe } from "../lib/shell-context";
 import { sessionNavigateTarget } from "../lib/navigate-to-session";
 import { ProjectTerminationFeedback } from "./ShellTopbar";
 import { ProjectBoardActions } from "./ProjectBoardActions";
+import { SessionsGraphView } from "./SessionsGraphView";
+import { SessionsViewToggle, shouldShowSessionsViewToggle } from "./SessionsViewToggle";
 import { useDiagnosticsEnabled, usePressureState, useSessionMemory } from "../hooks/useSessionMemory";
 import { AppMemoryIndicator, toSessionFacts, useHasAppMemory } from "./SessionMemoryPanel";
 import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
@@ -68,13 +70,17 @@ type SessionsBoardProps = {
 	/** When set, the board shows only this project's sessions. */
 	projectId?: string;
 	hostId?: string;
+	view?: "board" | "graph";
+	onViewChange?: (view: "board" | "graph") => void;
+	showArchived?: boolean;
+	onShowArchivedChange?: (show: boolean) => void;
 };
 
 const isMac = isMacPlatform();
 const dragStyle = isMac ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
 const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
 
-export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
+export function SessionsBoard({ projectId, hostId, view, onViewChange, showArchived, onShowArchivedChange }: SessionsBoardProps) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
@@ -96,6 +102,13 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 		? remoteProjectQuery.data ? [remoteProjectQuery.data] : []
 		: projectId ? all.filter((candidate) => candidate.id === projectId) : all;
 	const workspace = projectId ? workspaces[0] : undefined;
+	const canShowGraph = shouldShowSessionsViewToggle({
+		projectId,
+		hasCallbacks: onViewChange !== undefined,
+		preview: usesPreviewWorkspaceData,
+		cloudProject: workspace?.kind === CLOUD_PROJECT_KIND,
+	});
+	const activeView = canShowGraph && view === "graph" ? "graph" : "board";
 	// A Freestyle cloud project's orchestrator starts in place (see
 	// OrchestratorStartingChat); its session does not exist yet, so the
 	// project's provider decides, as the control plane's does.
@@ -193,6 +206,7 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 	}, [sessions, memoryBySession, pressure]);
 	// The bar hosts the memory indicator too, so it stays up with an empty archive.
 	const hasArchive = archived.length > 0 || hasMemory;
+	const boardHasArchive = hasArchive && activeView === "board";
 	const terminateSession = useTerminateSession();
 	const activeScopeRef = useRef(scopeKey);
 	activeScopeRef.current = scopeKey;
@@ -304,8 +318,8 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 			{/* Reserve only the collapsed archive bar. Expanded archive overlays the
 			    board so lane height (and Needs You scrollbars) stay stable. */}
 			<div
-				className={cn("min-h-0 flex-1 overflow-hidden", hasArchive && archiveToggleOffsetClassName)}
-				style={hasArchive ? { clipPath: "inset(0 0 var(--sessions-archive-height, 58px) 0)" } : undefined}
+				className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", boardHasArchive && archiveToggleOffsetClassName)}
+				style={boardHasArchive ? { clipPath: "inset(0 0 var(--sessions-archive-height, 58px) 0)" } : undefined}
 			>
 				{projectId && health.state !== "ok" && (!hostId || connected && (health.state !== "missing" || hasConfiguredOrchestratorAgent(workspace))) ? (
 					<div className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
@@ -339,10 +353,23 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 					</span>
 				</div>
 			) : null}
+			{canShowGraph ? (
+				<div className="flex shrink-0 items-center px-3 py-2">
+					<SessionsViewToggle view={activeView} onChange={(next) => onViewChange?.(next)} />
+				</div>
+			) : null}
+			<div className="flex min-h-0 flex-1 flex-col">
 				{!hostId && (presentation.workspaceStartupState === "error" || localWorkspaceQuery.isError) ? (
 					<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
 				) : hostId && !workspace ? null : showWelcome ? (
 				<BoardWelcome />
+				) : activeView === "graph" ? (
+					<SessionsGraphView
+						sessions={workspace?.sessions ?? []}
+						showArchived={showArchived ?? false}
+						onShowArchivedChange={onShowArchivedChange ?? (() => undefined)}
+						onOpenSession={openSession}
+					/>
 				) : showProjectEmpty ? (
 					<ProjectBoardEmpty actions={<ProjectBoardActions actions={projectActions} placement="empty" />} />
 				) : (
@@ -367,8 +394,9 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 					/>
 				)}
 			</div>
+			</div>
 
-			{hasArchive ? (
+			{boardHasArchive ? (
 				<BoardArchivePanel
 					activeScopeRef={activeScopeRef}
 					hostId={hostId}
