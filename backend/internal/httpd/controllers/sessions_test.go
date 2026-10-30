@@ -1412,6 +1412,50 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_ListExposesParentSessionID(t *testing.T) {
+	svc := newFakeSessionService()
+	now := time.Now().UTC()
+	svc.sessions["ao-parent"] = domain.Session{SessionRecord: domain.SessionRecord{
+		ID: "ao-parent", ProjectID: "ao", Kind: domain.KindOrchestrator,
+		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+		CreatedAt: now, UpdatedAt: now,
+	}, Status: domain.StatusIdle}
+	svc.sessions["ao-child"] = domain.Session{SessionRecord: domain.SessionRecord{
+		ID: "ao-child", ProjectID: "ao", Kind: domain.KindWorker, ParentSessionID: "ao-parent",
+		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+		CreatedAt: now, UpdatedAt: now,
+	}, Status: domain.StatusIdle}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions?project=ao", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET sessions = %d, want 200; body=%s", status, body)
+	}
+	var raw struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	mustJSON(t, body, &raw)
+	byID := map[string]map[string]any{}
+	for _, session := range raw.Sessions {
+		id, _ := session["id"].(string)
+		byID[id] = session
+	}
+	child, ok := byID["ao-child"]
+	if !ok {
+		t.Fatalf("child missing from list: %s", body)
+	}
+	if got := child["parentSessionId"]; got != "ao-parent" {
+		t.Fatalf("child parentSessionId = %v, want ao-parent; body=%s", got, body)
+	}
+	root, ok := byID["ao-1"]
+	if !ok {
+		t.Fatalf("root missing from list: %s", body)
+	}
+	if _, ok := root["parentSessionId"]; ok {
+		t.Fatalf("root session carries parentSessionId: %s", body)
+	}
+}
+
 func TestSessionsAPI_GetExposesArtifactFilesAndServesHTMLArtifact(t *testing.T) {
 	artifactDir := t.TempDir()
 	artifactPath := filepath.Join(artifactDir, "site", "index.html")
