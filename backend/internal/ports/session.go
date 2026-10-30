@@ -24,7 +24,7 @@ type SpawnConfig struct {
 	// ClientRequestID and hash identify one optional interactive create request.
 	ClientRequestID   string
 	ClientRequestHash string
-	// ParentSessionID identifies the AO orchestrator that requested this worker
+	// ParentSessionID identifies the AO session that requested this spawn
 	// through `ao spawn`. The daemon validates this reference and derives any
 	// inherited settings itself; callers never supply an inherited policy.
 	ParentSessionID domain.SessionID

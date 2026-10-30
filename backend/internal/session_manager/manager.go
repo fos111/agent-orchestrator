@@ -1016,6 +1016,13 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if projectKind == domain.ProjectKindScratch && strings.TrimSpace(cfg.Branch) != "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrScratchBranchUnsupported)
 	}
+	if cfg.ParentSessionID != "" {
+		parentID, err := m.resolveSpawnParent(ctx, cfg.ProjectID, cfg.ParentSessionID)
+		if err != nil {
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+		}
+		cfg.ParentSessionID = parentID
+	}
 	if cfg.ParentSessionID != "" && cfg.AgentConfig.Permissions == "" {
 		permissions, err := m.inheritedSpawnPermissions(ctx, cfg.ProjectID, cfg.ParentSessionID)
 		if err != nil {
@@ -1817,6 +1824,23 @@ func containsString(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+// resolveSpawnParent normalizes the caller-supplied spawn parent into the one
+// link AO persists. A missing, cross-project, or hidden parent leaves a root:
+// the link records real request history, never a best guess.
+func (m *Manager) resolveSpawnParent(ctx context.Context, projectID domain.ProjectID, parentID domain.SessionID) (domain.SessionID, error) {
+	if parentID == "" {
+		return "", nil
+	}
+	parent, ok, err := m.store.GetSession(ctx, parentID)
+	if err != nil {
+		return "", fmt.Errorf("load parent session %s: %w", parentID, err)
+	}
+	if !ok || parent.ProjectID != projectID || parent.IsTaskPreparation {
+		return "", nil
+	}
+	return parent.ID, nil
 }
 
 // inheritedSpawnPermissions derives a worker override from its requesting chat
@@ -5709,6 +5733,7 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		AutomationRunID:   cfg.AutomationRunID,
 		ClientRequestID:   cfg.ClientRequestID,
 		ClientRequestHash: cfg.ClientRequestHash,
+		ParentSessionID:   cfg.ParentSessionID,
 		Kind:              cfg.Kind,
 		CreatedAt:         now,
 		UpdatedAt:         now,
