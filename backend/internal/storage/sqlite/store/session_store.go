@@ -300,6 +300,7 @@ func (s *Store) PromoteTaskPreparation(ctx context.Context, id domain.SessionID,
 	activity := normalActivity(rec.Activity, rec.UpdatedAt)
 	rows, err := s.qw.PromoteTaskPreparation(ctx, gen.PromoteTaskPreparationParams{
 		IssueID:            rec.IssueID,
+		ParentSessionID:    optionalParentSessionID(rec.ParentSessionID),
 		Kind:               rec.Kind,
 		Harness:            rec.Harness,
 		AutoReviewEnabled:  rec.AutoReviewEnabled,
@@ -964,6 +965,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		AutomationRunID:           row.AutomationRunID,
 		AutomationLaunchCompleted: row.AutomationLaunchCompleted,
 		IssueID:                   row.IssueID,
+		ParentSessionID:           parentSessionIDValue(row.ParentSessionID),
 		Kind:                      row.Kind,
 		Harness:                   row.Harness,
 		ReviewerHarness:           row.ReviewerHarness,
@@ -1102,6 +1104,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProjectID:                        optionalProjectID(rec.ProjectID),
 		Num:                              num,
 		IssueID:                          rec.IssueID,
+		ParentSessionID:                  optionalParentSessionID(rec.ParentSessionID),
 		Kind:                             rec.Kind,
 		Harness:                          rec.Harness,
 		ReviewerHarness:                  rec.ReviewerHarness,

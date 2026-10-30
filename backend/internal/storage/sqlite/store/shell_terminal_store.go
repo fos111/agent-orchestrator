@@ -137,6 +137,23 @@ func projectIDValue(id *domain.ProjectID) domain.ProjectID {
 	return *id
 }
 
+// optionalParentSessionID maps the "no parent" empty string onto the nullable
+// column, so a root session stores NULL rather than an empty string that would
+// violate the sessions FK.
+func optionalParentSessionID(id domain.SessionID) *domain.SessionID {
+	if id == "" {
+		return nil
+	}
+	return &id
+}
+
+func parentSessionIDValue(id *domain.SessionID) domain.SessionID {
+	if id == nil {
+		return ""
+	}
+	return *id
+}
+
 // optionalSessionID maps the service's "no session" empty string onto the
 // nullable column, so a session-less shell stores NULL rather than an empty
 // string that would violate the sessions FK.

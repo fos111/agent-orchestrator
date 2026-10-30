@@ -107,6 +107,12 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "IssueID"
+          # Nullable: a root session has no parent.
+          - column: "sessions.parent_session_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionID"
+              pointer: true
           - column: "sessions.kind"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

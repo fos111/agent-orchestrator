@@ -209,7 +209,7 @@ func (q *Queries) GetClientRequestSession(ctx context.Context, clientRequestID s
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
@@ -236,6 +236,7 @@ type GetSessionRow struct {
 	ProjectID                        *domain.ProjectID
 	Num                              int64
 	IssueID                          domain.IssueID
+	ParentSessionID                  *domain.SessionID
 	Kind                             domain.SessionKind
 	Harness                          domain.AgentHarness
 	ActivityState                    domain.ActivityState
@@ -320,6 +321,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.ProjectID,
 		&i.Num,
 		&i.IssueID,
+		&i.ParentSessionID,
 		&i.Kind,
 		&i.Harness,
 		&i.ActivityState,
@@ -399,7 +401,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 }
 
 const getSessionByAutomationRunID = `-- name: GetSessionByAutomationRunID :one
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
@@ -426,6 +428,7 @@ type GetSessionByAutomationRunIDRow struct {
 	ProjectID                        *domain.ProjectID
 	Num                              int64
 	IssueID                          domain.IssueID
+	ParentSessionID                  *domain.SessionID
 	Kind                             domain.SessionKind
 	Harness                          domain.AgentHarness
 	ActivityState                    domain.ActivityState
@@ -510,6 +513,7 @@ func (q *Queries) GetSessionByAutomationRunID(ctx context.Context, automationRun
 		&i.ProjectID,
 		&i.Num,
 		&i.IssueID,
+		&i.ParentSessionID,
 		&i.Kind,
 		&i.Harness,
 		&i.ActivityState,
@@ -590,7 +594,7 @@ func (q *Queries) GetSessionByAutomationRunID(ctx context.Context, automationRun
 
 const insertSession = `-- name: InsertSession :exec
 INSERT INTO sessions (
-    id, project_id, num, issue_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
+    id, project_id, num, issue_id, parent_session_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
     runtime_launch_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
@@ -606,7 +610,7 @@ INSERT INTO sessions (
     provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
     client_request_id, client_request_hash
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
@@ -621,6 +625,7 @@ type InsertSessionParams struct {
 	ProjectID                        *domain.ProjectID
 	Num                              int64
 	IssueID                          domain.IssueID
+	ParentSessionID                  *domain.SessionID
 	Kind                             domain.SessionKind
 	Harness                          domain.AgentHarness
 	ReviewerHarness                  domain.ReviewerHarness
@@ -688,6 +693,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.ProjectID,
 		arg.Num,
 		arg.IssueID,
+		arg.ParentSessionID,
 		arg.Kind,
 		arg.Harness,
 		arg.ReviewerHarness,
@@ -752,7 +758,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 }
 
 const listAllSessions = `-- name: ListAllSessions :many
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
@@ -779,6 +785,7 @@ type ListAllSessionsRow struct {
 	ProjectID                        *domain.ProjectID
 	Num                              int64
 	IssueID                          domain.IssueID
+	ParentSessionID                  *domain.SessionID
 	Kind                             domain.SessionKind
 	Harness                          domain.AgentHarness
 	ActivityState                    domain.ActivityState
@@ -869,6 +876,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.ProjectID,
 			&i.Num,
 			&i.IssueID,
+			&i.ParentSessionID,
 			&i.Kind,
 			&i.Harness,
 			&i.ActivityState,
@@ -991,7 +999,7 @@ func (q *Queries) ListChatHibernationCandidates(ctx context.Context) ([]domain.S
 }
 
 const listSessionsByProject = `-- name: ListSessionsByProject :many
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
@@ -1018,6 +1026,7 @@ type ListSessionsByProjectRow struct {
 	ProjectID                        *domain.ProjectID
 	Num                              int64
 	IssueID                          domain.IssueID
+	ParentSessionID                  *domain.SessionID
 	Kind                             domain.SessionKind
 	Harness                          domain.AgentHarness
 	ActivityState                    domain.ActivityState
@@ -1108,6 +1117,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.ProjectID,
 			&i.Num,
 			&i.IssueID,
+			&i.ParentSessionID,
 			&i.Kind,
 			&i.Harness,
 			&i.ActivityState,
@@ -1377,32 +1387,34 @@ func (q *Queries) NextStandaloneSessionNum(ctx context.Context) (int64, error) {
 const promoteTaskPreparation = `-- name: PromoteTaskPreparation :execrows
 UPDATE sessions SET
     issue_id = ?1,
-    kind = ?2,
-    harness = ?3,
-    auto_review_enabled = ?4,
-    display_name = ?5,
-    activity_state = ?6,
-    activity_last_at = ?7,
+    parent_session_id = ?2,
+    kind = ?3,
+    harness = ?4,
+    auto_review_enabled = ?5,
+    display_name = ?6,
+    activity_state = ?7,
+    activity_last_at = ?8,
     is_terminated = 0,
-    session_mode = ?8,
-    model = ?9,
-    effort = ?10,
-    session_permissions = ?11,
-    requested_output = ?12,
-    created_at = ?13,
-    updated_at = ?14,
-    auto_inject_review = ?15,
-    auto_inject_ci = ?16,
-    provision_state = ?17,
+    session_mode = ?9,
+    model = ?10,
+    effort = ?11,
+    session_permissions = ?12,
+    requested_output = ?13,
+    created_at = ?14,
+    updated_at = ?15,
+    auto_inject_review = ?16,
+    auto_inject_ci = ?17,
+    provision_state = ?18,
     provision_error = '',
-    client_request_id = ?18,
-    client_request_hash = ?19,
+    client_request_id = ?19,
+    client_request_hash = ?20,
     is_task_preparation = 0
-WHERE id = ?20 AND is_task_preparation = 1
+WHERE id = ?21 AND is_task_preparation = 1
 `
 
 type PromoteTaskPreparationParams struct {
 	IssueID            domain.IssueID
+	ParentSessionID    *domain.SessionID
 	Kind               domain.SessionKind
 	Harness            domain.AgentHarness
 	AutoReviewEnabled  bool
@@ -1429,6 +1441,7 @@ type PromoteTaskPreparationParams struct {
 func (q *Queries) PromoteTaskPreparation(ctx context.Context, arg PromoteTaskPreparationParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, promoteTaskPreparation,
 		arg.IssueID,
+		arg.ParentSessionID,
 		arg.Kind,
 		arg.Harness,
 		arg.AutoReviewEnabled,

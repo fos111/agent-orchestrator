@@ -741,6 +741,7 @@ type Session struct {
 	LaunchOptions                    string
 	BranchNaming                     bool
 	TemporaryBranch                  string
+	ParentSessionID                  *domain.SessionID
 }
 
 type SessionAgentAccount struct {
