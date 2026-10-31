@@ -3039,6 +3039,101 @@ paths:
         shell terminal
       tags:
       - cues
+  /api/v1/dag-runs/{dagRunId}:
+    get:
+      operationId: getDagRun
+      parameters:
+      - description: DAG run identifier, e.g. dag-<uuid>.
+        in: path
+        name: dagRunId
+        required: true
+        schema:
+          description: DAG run identifier, e.g. dag-<uuid>.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DagRunEnvelope'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get one DAG run's derived status and nodes
+      tags:
+      - sessions
+  /api/v1/dag-runs/{dagRunId}/cancel:
+    post:
+      operationId: cancelDagRun
+      parameters:
+      - description: DAG run identifier, e.g. dag-<uuid>.
+        in: path
+        name: dagRunId
+        required: true
+        schema:
+          description: DAG run identifier, e.g. dag-<uuid>.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelDagRunRequest'
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DagRunEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Cancel a DAG run's queued and blocked nodes
+      tags:
+      - sessions
   /api/v1/desktop/sessions/{sessionId}/artifacts:
     get:
       operationId: getDesktopSessionArtifacts
@@ -4706,6 +4801,89 @@ paths:
       summary: Create a cue for a project
       tags:
       - cues
+  /api/v1/projects/{projectId}/dag-runs:
+    get:
+      operationId: listDagRuns
+      parameters:
+      - description: Project that owns the DAG run.
+        in: path
+        name: projectId
+        required: true
+        schema:
+          description: Project that owns the DAG run.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDagRunsResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List a project's DAG runs
+      tags:
+      - sessions
+    post:
+      operationId: createDagRun
+      parameters:
+      - description: Project that owns the DAG run.
+        in: path
+        name: projectId
+        required: true
+        schema:
+          description: Project that owns the DAG run.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDagRunRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DagRunEnvelope'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Submit a DAG run atomically
+      tags:
+      - sessions
   /api/v1/projects/clone:
     post:
       operationId: cloneProject
@@ -14698,6 +14876,11 @@ components:
       - transport
       - target
       type: object
+    CancelDagRunRequest:
+      properties:
+        includeActive:
+          type: boolean
+      type: object
     CancelReviewResponse:
       properties:
         reviewerHandleId:
@@ -15877,6 +16060,14 @@ components:
         createdAt:
           format: date-time
           type: string
+        dagNodeId:
+          type:
+          - "null"
+          - string
+        dagRunId:
+          type:
+          - "null"
+          - string
         dependents:
           items:
             type: string
@@ -17053,6 +17244,89 @@ components:
       required:
       - side
       type: object
+    CreateDagRunNode:
+      properties:
+        dependsOn:
+          items:
+            type: string
+          type: array
+        harness:
+          enum:
+          - claude-code
+          - codex
+          - aider
+          - opencode
+          - opencode-v2
+          - grok
+          - droid
+          - amp
+          - agy
+          - crush
+          - cursor
+          - qwen
+          - gemini
+          - copilot
+          - goose
+          - auggie
+          - continue
+          - devin
+          - cline
+          - kimi
+          - muse
+          - kiro
+          - kilocode
+          - vibe
+          - pi
+          - kimchi
+          - omp
+          - fx
+          - prime-agent
+          - autohand
+          - unreal-agent
+          - codewhale
+          - mimo-code
+          - deepseek-harness
+          - openhands
+          - command-code
+          - memcode
+          - hermes
+          type: string
+        id:
+          maxLength: 64
+          type: string
+        name:
+          maxLength: 100
+          type: string
+        prompt:
+          maxLength: 16384
+          type: string
+        requestedOutput:
+          enum:
+          - artifact
+          type: string
+        requiredState:
+          enum:
+          - ready
+          - merged
+          - completed
+          type: string
+      required:
+      - id
+      - prompt
+      type: object
+    CreateDagRunRequest:
+      properties:
+        name:
+          maxLength: 100
+          type: string
+        nodes:
+          items:
+            $ref: '#/components/schemas/CreateDagRunNode'
+          type: array
+      required:
+      - name
+      - nodes
+      type: object
     CreateReportRequest:
       properties:
         message:
@@ -17143,6 +17417,121 @@ components:
       - type
       - createdAt
       - updatedAt
+      type: object
+    DagRunCountsResponse:
+      properties:
+        blocked:
+          type: integer
+        cancelled:
+          type: integer
+        completed:
+          type: integer
+        failed:
+          type: integer
+        queued:
+          type: integer
+        running:
+          type: integer
+        total:
+          type: integer
+      required:
+      - total
+      - queued
+      - blocked
+      - running
+      - completed
+      - failed
+      - cancelled
+      type: object
+    DagRunEnvelope:
+      properties:
+        run:
+          $ref: '#/components/schemas/DagRunResponse'
+      required:
+      - run
+      type: object
+    DagRunNodeResponse:
+      properties:
+        blockedReason:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        dependsOn:
+          items:
+            type: string
+          type: array
+        id:
+          type: string
+        name:
+          type: string
+        sessionId:
+          type:
+          - "null"
+          - string
+        status:
+          enum:
+          - queued
+          - blocked
+          - running
+          - completed
+          - failed
+          - cancelled
+          type: string
+      required:
+      - id
+      - sessionId
+      - name
+      - status
+      - createdAt
+      type: object
+    DagRunResponse:
+      properties:
+        cancelRequestedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        completedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        counts:
+          $ref: '#/components/schemas/DagRunCountsResponse'
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        nodes:
+          items:
+            $ref: '#/components/schemas/DagRunNodeResponse'
+          type: array
+        projectId:
+          type: string
+        rootSessionId:
+          type:
+          - "null"
+          - string
+        status:
+          enum:
+          - pending
+          - running
+          - completed
+          - failed
+          - cancelled
+          type: string
+      required:
+      - id
+      - projectId
+      - name
+      - status
+      - createdAt
+      - counts
+      - nodes
       type: object
     DegradedProject:
       properties:
@@ -18096,6 +18485,15 @@ components:
           type: array
       required:
       - cues
+      type: object
+    ListDagRunsResponse:
+      properties:
+        runs:
+          items:
+            $ref: '#/components/schemas/DagRunResponse'
+          type: array
+      required:
+      - runs
       type: object
     ListDirsResponse:
       properties:
@@ -19583,6 +19981,8 @@ components:
         maxActivePerTeam:
           type: integer
         maxActiveSessions:
+          type: integer
+        maxDagNodesPerRun:
           type: integer
         maxDependenciesPerSession:
           type: integer
