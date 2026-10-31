@@ -7,6 +7,8 @@ export type BoardSearchLayout = "spawn" | "dependency";
 export type BoardSearch = {
 	view?: "graph";
 	archived?: boolean;
+	/** A DAG run to filter the graph to. Absent when the whole project is shown. */
+	run?: string;
 	/** Only `dependency` is carried; `spawn` is the default and stays absent. */
 	layout?: "dependency";
 	/** Only a narrowed set is carried; the full set is the default. */
@@ -49,11 +51,23 @@ export function boardSearchEdges(value: unknown): BoardSearchEdge[] | undefined 
 	return ordered.length === BOARD_SEARCH_EDGES.length ? undefined : ordered;
 }
 
+/**
+ * The DAG run id from a raw URL value. The router spreads raw values over the
+ * validated ones, so anything that is not a non-empty string is no filter.
+ */
+export function boardSearchRun(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed === "" ? undefined : trimmed;
+}
+
 export function validateBoardSearch(search: Record<string, unknown>): BoardSearch {
 	const result: BoardSearch = {};
 	if (search.view === "graph") result.view = "graph";
 	const archived = search.archived;
 	if (archived === true || archived === 1 || archived === "1") result.archived = true;
+	const run = boardSearchRun(search.run);
+	if (run) result.run = run;
 	if (search.layout === "dependency") result.layout = "dependency";
 	const edges = boardSearchEdges(search.edges);
 	if (edges) result.edges = edges;
@@ -66,6 +80,7 @@ function withBoardSearch(search: BoardSearch, patch: Partial<BoardSearch>): Boar
 	return {
 		...(next.view === "graph" ? { view: "graph" as const } : {}),
 		...(next.archived ? { archived: true } : {}),
+		...(next.run ? { run: next.run } : {}),
 		...(next.layout === "dependency" ? { layout: "dependency" as const } : {}),
 		...(next.edges ? { edges: next.edges } : {}),
 	};
@@ -85,6 +100,18 @@ export function boardSearchWithArchived(
 	archived: boolean,
 ): BoardSearch {
 	return withBoardSearch(search, { archived: archived || undefined });
+}
+
+export function boardSearchWithRun(
+	search: BoardSearch,
+	run: string | undefined,
+): BoardSearch {
+	const normalized = boardSearchRun(run);
+	// A run filter is only meaningful in the graph, so naming one also selects it.
+	return withBoardSearch(search, {
+		run: normalized,
+		...(normalized ? { view: "graph" as const } : {}),
+	});
 }
 
 export function boardSearchWithLayout(

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	boardSearchEdges,
+	boardSearchRun,
 	boardSearchWithArchived,
 	boardSearchWithEdges,
 	boardSearchWithLayout,
+	boardSearchWithRun,
 	boardSearchWithView,
 	validateBoardSearch,
 } from "./board-search";
@@ -137,11 +139,48 @@ describe("boardSearchWithEdges", () => {
 	});
 });
 
+describe("DAG run filter", () => {
+	it("accepts a non-empty run id and drops everything else", () => {
+		expect(validateBoardSearch({ run: "dag-1" })).toEqual({ run: "dag-1" });
+		expect(validateBoardSearch({ run: " dag-1 " })).toEqual({ run: "dag-1" });
+		expect(validateBoardSearch({ run: "" })).toEqual({});
+		expect(validateBoardSearch({ run: 1 })).toEqual({});
+		expect(validateBoardSearch({ run: ["dag-1"] })).toEqual({});
+	});
+
+	it("normalizes the raw values the router can hand the board", () => {
+		expect(boardSearchRun("dag-1")).toBe("dag-1");
+		expect(boardSearchRun(" ")).toBeUndefined();
+		expect(boardSearchRun(0)).toBeUndefined();
+		expect(boardSearchRun(null)).toBeUndefined();
+		expect(boardSearchRun(undefined)).toBeUndefined();
+	});
+
+	it("sets the run and selects the graph so the filter is visible", () => {
+		expect(boardSearchWithRun({}, "dag-1")).toEqual({ view: "graph", run: "dag-1" });
+		expect(boardSearchWithRun({ view: "graph", archived: true, edges: ["spawn"] }, "dag-1")).toEqual({
+			view: "graph",
+			archived: true,
+			run: "dag-1",
+			edges: ["spawn"],
+		});
+	});
+
+	it("clears the run without dropping the view", () => {
+		expect(boardSearchWithRun({ view: "graph", run: "dag-1" }, undefined)).toEqual({
+			view: "graph",
+		});
+		expect(boardSearchWithRun({ view: "graph", run: "dag-1" }, "  ")).toEqual({
+			view: "graph",
+		});
+	});
+});
+
 describe("boardSearchWithView clearing graph filters", () => {
-	it("clears layout and edges when returning to the board", () => {
+	it("clears layout, edges, and the run when returning to the board", () => {
 		expect(
 			boardSearchWithView(
-				{ view: "graph", layout: "dependency", edges: ["spawn"] },
+				{ view: "graph", run: "dag-1", layout: "dependency", edges: ["spawn"] },
 				"board",
 			),
 		).toEqual({});

@@ -82,6 +82,12 @@ export type BuildSessionGraphOptions = {
 	 * an overlay. `dependency` lays sessions out by dependency depth instead.
 	 */
 	layout?: SessionGraphLayout;
+	/**
+	 * Show only the sessions that belong to this DAG run. The run is authoritative:
+	 * archived members stay visible even when `includeArchived` is false, and an
+	 * edge to a session outside the run is reported as filtered.
+	 */
+	dagRunId?: string;
 };
 
 export const SESSION_GRAPH_NODE_WIDTH = 232;
@@ -306,8 +312,14 @@ export function buildSessionGraph(
 	sessions: readonly WorkspaceSession[],
 	options: BuildSessionGraphOptions,
 ): SessionGraph {
+	const source = options.dagRunId
+		? sessions.filter((session) => session.dagRunId === options.dagRunId)
+		: sessions;
+	// A run filter is the whole view: every member belongs to it, including ones
+	// the board would otherwise hide as archived.
+	const includeArchived = options.includeArchived || options.dagRunId !== undefined;
 	const byId = new Map<string, WorkspaceSession>();
-	for (const session of sessions) {
+	for (const session of source) {
 		if (!byId.has(session.id)) byId.set(session.id, session);
 	}
 	const ordered = [...byId.values()].sort(compareSessions);
@@ -356,11 +368,11 @@ export function buildSessionGraph(
 	const includedIds = new Set<string>();
 	const contextOnlyIds = new Set<string>();
 	for (const session of ordered) {
-		if (options.includeArchived || !isArchivedSession(session)) {
+		if (includeArchived || !isArchivedSession(session)) {
 			includedIds.add(session.id);
 		}
 	}
-	if (!options.includeArchived) {
+	if (!includeArchived) {
 		// A visible session's archived dependency stays in the graph as a
 		// context-only node, matching the archived-ancestor rule, so the
 		// dependency edge does not dangle. Its own dependencies follow, so the
