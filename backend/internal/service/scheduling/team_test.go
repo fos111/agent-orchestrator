@@ -109,6 +109,51 @@ func TestTeamServiceTeamDerivation(t *testing.T) {
 	}
 }
 
+type fakeProjectReader struct {
+	records map[string]domain.ProjectRecord
+	err     error
+}
+
+func (f *fakeProjectReader) GetProject(_ context.Context, id string) (domain.ProjectRecord, bool, error) {
+	if f.err != nil {
+		return domain.ProjectRecord{}, false, f.err
+	}
+	rec, ok := f.records[id]
+	return rec, ok, nil
+}
+
+func TestTeamServiceResolvesProjectMaxActivePerTeam(t *testing.T) {
+	project := domain.ProjectID("proj")
+	reader := &fakeSessionReader{records: map[domain.SessionID]domain.SessionRecord{
+		"ao-1": schedulingRecord("ao-1", "", domain.KindOrchestrator, project),
+		"ao-2": schedulingRecord("ao-2", "ao-1", domain.KindWorker, project),
+	}}
+	projects := &fakeProjectReader{records: map[string]domain.ProjectRecord{
+		"proj": {ID: "proj", Config: domain.ProjectConfig{Scheduling: domain.SchedulingConfig{MaxActivePerTeam: 2}}},
+	}}
+	svc := scheduling.NewTeamServiceWithProjects(reader, projects)
+
+	team, ok, err := svc.TeamFor(context.Background(), "ao-2")
+	if err != nil || !ok {
+		t.Fatalf("TeamFor = (%v, %v)", ok, err)
+	}
+	if team.MaxActiveWorkers != 2 {
+		t.Fatalf("MaxActiveWorkers = %d, want project value 2", team.MaxActiveWorkers)
+	}
+
+	teams, err := svc.Teams(context.Background(), project)
+	if err != nil || len(teams) != 1 || teams[0].MaxActiveWorkers != 2 {
+		t.Fatalf("Teams() = %+v err=%v, want project value 2", teams, err)
+	}
+
+	// An unknown project or a failed read keeps the product default.
+	fallback := scheduling.NewTeamServiceWithProjects(reader, &fakeProjectReader{err: errors.New("boom")})
+	team, ok, err = fallback.TeamFor(context.Background(), "ao-2")
+	if err != nil || !ok || team.MaxActiveWorkers != domain.DefaultMaxActivePerTeam {
+		t.Fatalf("fallback team = %+v ok=%v err=%v", team, ok, err)
+	}
+}
+
 func TestTeamServicePropagatesReadErrors(t *testing.T) {
 	want := errors.New("boom")
 	svc := scheduling.NewTeamService(&fakeSessionReader{records: map[domain.SessionID]domain.SessionRecord{

@@ -44,6 +44,7 @@ type Store interface {
 	ListProjects(ctx context.Context) ([]domain.ProjectRecord, error)
 	ListSchedulingCandidateIDs(ctx context.Context, projectID domain.ProjectID) ([]domain.SessionID, error)
 	ListSchedulingProjectIDs(ctx context.Context) ([]domain.ProjectID, error)
+	ListSessions(ctx context.Context, projectID domain.ProjectID) ([]domain.SessionRecord, error)
 	ListSessionDependencies(ctx context.Context, id domain.SessionID) ([]domain.SessionDependency, error)
 	ListSessionDependenciesForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.SessionDependency, error)
 	CountActiveProjectSessions(ctx context.Context, projectID domain.ProjectID) (int64, error)
@@ -163,11 +164,16 @@ func (s *Service) reconcileLocked(ctx context.Context, projectID domain.ProjectI
 	if err != nil {
 		return res, err
 	}
-	limit := int64(config.MaxActiveSessions)
-	if err := s.evaluate(ctx, projectID, limit > 0 && active >= limit, &res); err != nil {
+	records, err := s.store.ListSessions(ctx, projectID)
+	if err != nil {
 		return res, err
 	}
-	if err := s.admit(ctx, projectID, limit, &active, &res); err != nil {
+	limits := NewTeamAdmission(records, config.TeamLimit())
+	limit := int64(config.MaxActiveSessions)
+	if err := s.evaluate(ctx, projectID, limit > 0 && active >= limit, limits, &res); err != nil {
+		return res, err
+	}
+	if err := s.admit(ctx, projectID, limit, limits, &active, &res); err != nil {
 		return res, err
 	}
 	s.launchAdmitted(ctx, &res)
@@ -183,7 +189,7 @@ func (s *Service) reconcileLocked(ctx context.Context, projectID domain.ProjectI
 // evaluate moves each candidate to the state its edges imply. A candidate
 // already in the implied state is left alone, so a stable queue produces no
 // writes and no event churn.
-func (s *Service) evaluate(ctx context.Context, projectID domain.ProjectID, projectFull bool, res *Result) error {
+func (s *Service) evaluate(ctx context.Context, projectID domain.ProjectID, projectFull bool, limits *TeamAdmission, res *Result) error {
 	ids, err := s.store.ListSchedulingCandidateIDs(ctx, projectID)
 	if err != nil {
 		return err
@@ -224,11 +230,17 @@ func (s *Service) evaluate(ctx context.Context, projectID domain.ProjectID, proj
 		rec := records[id]
 		res.Evaluated++
 		next, reason := decide(edgesBySession[id], snapshots)
-		if next == domain.SchedulingQueued && projectFull {
-			// Dependencies are satisfied but no slot is free. Recording the
-			// limit here keeps the queue from flapping queued/blocked on every
-			// tick while the project is full.
-			next, reason = domain.SchedulingBlocked, domain.BlockedProjectLimit
+		if next == domain.SchedulingQueued {
+			if projectFull {
+				// Dependencies are satisfied but no project slot is free.
+				// Recording the limit keeps the queue from flapping
+				// queued/blocked on every tick while the project is full.
+				next, reason = domain.SchedulingBlocked, domain.BlockedProjectLimit
+			} else if limits.Blocked(id) {
+				// The team keeps its already-running workers; only the new
+				// candidates wait, so nothing is killed or paused.
+				next, reason = domain.SchedulingBlocked, domain.BlockedTeamLimit
+			}
 		}
 		current := rec.SchedulingState.WithDefault()
 		if current == next && (next != domain.SchedulingBlocked || domain.BlockedReason(rec.BlockedReason) == reason) {
@@ -242,9 +254,10 @@ func (s *Service) evaluate(ctx context.Context, projectID domain.ProjectID, proj
 }
 
 // admit records admission with a compare-and-set in FIFO order. Sessions left
-// over the limit go back to blocked(project_limit) rather than waiting in the
-// queue, so the reason is visible.
-func (s *Service) admit(ctx context.Context, projectID domain.ProjectID, limit int64, active *int64, res *Result) error {
+// over the project limit go back to blocked(project_limit), and sessions left
+// over their team's worker cap go back to blocked(team_limit), rather than
+// waiting in the queue, so the reason is visible.
+func (s *Service) admit(ctx context.Context, projectID domain.ProjectID, limit int64, limits *TeamAdmission, active *int64, res *Result) error {
 	ids, err := s.store.ListSchedulingCandidateIDs(ctx, projectID)
 	if err != nil {
 		return err
@@ -264,6 +277,12 @@ func (s *Service) admit(ctx context.Context, projectID domain.ProjectID, limit i
 		if !found || rec.IsTerminated || rec.SchedulingState.WithDefault() != domain.SchedulingQueued {
 			continue
 		}
+		if limits.Blocked(id) {
+			if _, err := s.store.SetSessionSchedulingState(ctx, id, domain.SchedulingQueued, domain.SchedulingBlocked, domain.BlockedTeamLimit, now); err != nil {
+				return err
+			}
+			continue
+		}
 		admitted, err := s.store.AdmitSession(ctx, id, now, false)
 		if err != nil {
 			return err
@@ -274,6 +293,7 @@ func (s *Service) admit(ctx context.Context, projectID domain.ProjectID, limit i
 			continue
 		}
 		*active++
+		limits.RecordAdmission(id)
 		res.Admitted = append(res.Admitted, id)
 	}
 	return nil

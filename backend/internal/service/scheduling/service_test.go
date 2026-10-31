@@ -87,6 +87,23 @@ func (f *fakeStore) ListSchedulingProjectIDs(context.Context) ([]domain.ProjectI
 	return out, nil
 }
 
+func (f *fakeStore) ListSessions(_ context.Context, projectID domain.ProjectID) ([]domain.SessionRecord, error) {
+	var out []domain.SessionRecord
+	for _, rec := range f.sessions {
+		if rec.ProjectID != projectID {
+			continue
+		}
+		out = append(out, rec)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
 func (f *fakeStore) ListSessionDependencies(_ context.Context, id domain.SessionID) ([]domain.SessionDependency, error) {
 	return append([]domain.SessionDependency(nil), f.edges[id]...), nil
 }
@@ -655,6 +672,188 @@ func TestEdgeSatisfiedReadyAcceptsMergedClosedAndApproved(t *testing.T) {
 				t.Fatalf("satisfied = %v, want %v", ok, tc.want)
 			}
 		})
+	}
+}
+
+func seedOrchestrator(st *fakeStore, id domain.SessionID, project domain.ProjectID, created time.Time) {
+	st.sessions[id] = domain.SessionRecord{
+		ID:              id,
+		ProjectID:       project,
+		Kind:            domain.KindOrchestrator,
+		SchedulingState: domain.SchedulingImmediate,
+		ProvisionState:  domain.SessionProvisionReady,
+		CreatedAt:       created,
+		UpdatedAt:       created,
+	}
+}
+
+func seedActiveWorker(st *fakeStore, id, parent domain.SessionID, project domain.ProjectID, created time.Time) {
+	st.sessions[id] = domain.SessionRecord{
+		ID:              id,
+		ProjectID:       project,
+		ParentSessionID: parent,
+		Kind:            domain.KindWorker,
+		SchedulingState: domain.SchedulingImmediate,
+		ProvisionState:  domain.SessionProvisionReady,
+		CreatedAt:       created,
+		UpdatedAt:       created,
+	}
+}
+
+func seedQueuedWorker(st *fakeStore, id, parent domain.SessionID, project domain.ProjectID, created time.Time) {
+	st.sessions[id] = domain.SessionRecord{
+		ID:              id,
+		ProjectID:       project,
+		ParentSessionID: parent,
+		Kind:            domain.KindWorker,
+		SchedulingState: domain.SchedulingQueued,
+		ProvisionState:  domain.SessionProvisionProvisioning,
+		CreatedAt:       created,
+		UpdatedAt:       created,
+	}
+}
+
+func TestReconcileAdmitsTeamWorkersUpToTheLimit(t *testing.T) {
+	st := newFakeStore()
+	launcher := &fakeLauncher{}
+	base := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	seedProject(st, "ao", domain.SchedulingConfig{MaxActivePerTeam: 2})
+	seedOrchestrator(st, "ao-1", "ao", base)
+	seedActiveWorker(st, "ao-2", "ao-1", "ao", base.Add(time.Minute))
+	seedQueuedWorker(st, "ao-3", "ao-1", "ao", base.Add(2*time.Minute))
+	seedQueuedWorker(st, "ao-4", "ao-1", "ao", base.Add(3*time.Minute))
+	sched := newScheduler(st, launcher, nil)
+
+	res, err := sched.Reconcile(context.Background(), "ao")
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(res.Admitted) != 1 || res.Admitted[0] != "ao-3" {
+		t.Fatalf("admitted = %v, want [ao-3]", res.Admitted)
+	}
+	if got := st.sessions["ao-4"]; got.SchedulingState != domain.SchedulingBlocked || got.BlockedReason != string(domain.BlockedTeamLimit) {
+		t.Fatalf("ao-4 = %+v, want blocked(team_limit)", got)
+	}
+	// Admitting and blocking never touches the worker already running.
+	if got := st.sessions["ao-2"]; got.SchedulingState != domain.SchedulingImmediate {
+		t.Fatalf("running worker ao-2 = %s, want immediate (never paused)", got.SchedulingState)
+	}
+}
+
+func TestReconcileBlocksTeamLimitWithoutTouchingRunningWorkers(t *testing.T) {
+	st := newFakeStore()
+	base := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	seedProject(st, "ao", domain.SchedulingConfig{MaxActivePerTeam: 1})
+	seedOrchestrator(st, "ao-1", "ao", base)
+	seedActiveWorker(st, "ao-2", "ao-1", "ao", base.Add(time.Minute))
+	seedQueuedWorker(st, "ao-3", "ao-1", "ao", base.Add(2*time.Minute))
+	sched := newScheduler(st, &fakeLauncher{}, nil)
+
+	res, err := sched.Reconcile(context.Background(), "ao")
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(res.Admitted) != 0 {
+		t.Fatalf("admitted = %v, want none", res.Admitted)
+	}
+	if got := st.sessions["ao-3"]; got.BlockedReason != string(domain.BlockedTeamLimit) {
+		t.Fatalf("ao-3 reason = %q, want team_limit", got.BlockedReason)
+	}
+	if got := st.sessions["ao-2"]; got.SchedulingState != domain.SchedulingImmediate || got.IsTerminated {
+		t.Fatalf("running worker = %+v, want untouched", got)
+	}
+}
+
+func TestReconcileReleasesTeamLimitWhenWorkerTerminates(t *testing.T) {
+	st := newFakeStore()
+	base := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	seedProject(st, "ao", domain.SchedulingConfig{MaxActivePerTeam: 1})
+	seedOrchestrator(st, "ao-1", "ao", base)
+	seedActiveWorker(st, "ao-2", "ao-1", "ao", base.Add(time.Minute))
+	seedQueuedWorker(st, "ao-3", "ao-1", "ao", base.Add(2*time.Minute))
+	sched := newScheduler(st, &fakeLauncher{}, nil)
+
+	if _, err := sched.Reconcile(context.Background(), "ao"); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if got := st.sessions["ao-3"]; got.BlockedReason != string(domain.BlockedTeamLimit) {
+		t.Fatalf("ao-3 after first reconcile = %+v, want blocked(team_limit)", got)
+	}
+
+	worker := st.sessions["ao-2"]
+	worker.IsTerminated = true
+	st.sessions["ao-2"] = worker
+
+	res, err := sched.Reconcile(context.Background(), "ao")
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if len(res.Admitted) != 1 || res.Admitted[0] != "ao-3" {
+		t.Fatalf("admitted after termination = %v, want [ao-3]", res.Admitted)
+	}
+}
+
+func TestReconcileTeamLimitSkipsStandaloneWorkers(t *testing.T) {
+	st := newFakeStore()
+	base := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	seedProject(st, "ao", domain.SchedulingConfig{MaxActivePerTeam: 1})
+	seedOrchestrator(st, "ao-1", "ao", base)
+	seedActiveWorker(st, "ao-2", "ao-1", "ao", base.Add(time.Minute))
+	// A standalone worker has no orchestrator ancestor: desktop New Task, a
+	// cloud task, or an unattached session must never be team-limited.
+	seedQueuedWorker(st, "ao-3", "", "ao", base.Add(2*time.Minute))
+	sched := newScheduler(st, &fakeLauncher{}, nil)
+
+	res, err := sched.Reconcile(context.Background(), "ao")
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(res.Admitted) != 1 || res.Admitted[0] != "ao-3" {
+		t.Fatalf("admitted = %v, want [ao-3]", res.Admitted)
+	}
+}
+
+func TestReconcileUsesDefaultTeamLimitWhenConfigIsUnset(t *testing.T) {
+	st := newFakeStore()
+	base := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	seedProject(st, "ao", domain.SchedulingConfig{})
+	seedOrchestrator(st, "ao-1", "ao", base)
+	for i := 0; i < domain.DefaultMaxActivePerTeam; i++ {
+		seedActiveWorker(st, domain.SessionID("ao-"+string(rune('a'+i))), "ao-1", "ao", base.Add(time.Duration(i+1)*time.Minute))
+	}
+	seedQueuedWorker(st, "ao-queued", "ao-1", "ao", base.Add(time.Hour))
+	sched := newScheduler(st, &fakeLauncher{}, nil)
+
+	res, err := sched.Reconcile(context.Background(), "ao")
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(res.Admitted) != 0 {
+		t.Fatalf("admitted = %v, want none at the default limit", res.Admitted)
+	}
+	if got := st.sessions["ao-queued"]; got.BlockedReason != string(domain.BlockedTeamLimit) {
+		t.Fatalf("queued reason = %q, want team_limit", got.BlockedReason)
+	}
+}
+
+func TestAdmitForceBypassesTeamLimit(t *testing.T) {
+	st := newFakeStore()
+	base := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	seedProject(st, "ao", domain.SchedulingConfig{MaxActivePerTeam: 1})
+	seedOrchestrator(st, "ao-1", "ao", base)
+	seedActiveWorker(st, "ao-2", "ao-1", "ao", base.Add(time.Minute))
+	seedQueuedWorker(st, "ao-3", "ao-1", "ao", base.Add(2*time.Minute))
+	sched := newScheduler(st, &fakeLauncher{}, nil)
+
+	rec, err := sched.Admit(context.Background(), "ao-3", true)
+	if err != nil {
+		t.Fatalf("forced admit: %v", err)
+	}
+	if rec.SchedulingState != domain.SchedulingImmediate {
+		t.Fatalf("state = %s, want immediate after forced launch", rec.SchedulingState)
+	}
+	if !rec.AdmissionOverride {
+		t.Fatal("forced admit did not record the override")
 	}
 }
 

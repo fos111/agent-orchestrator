@@ -1042,7 +1042,7 @@ func Run(buildVersion string) error {
 	// Teams are derived from the durable spawn-parent tree; only broadcasts and
 	// their per-member delivery results are stored.
 	teamService := teamsvc.New(teamsvc.Deps{
-		Teams:  schedsvc.NewTeamService(store),
+		Teams:  schedsvc.NewTeamServiceWithProjects(store, store),
 		Store:  store,
 		Sender: sessionSvc,
 	})
