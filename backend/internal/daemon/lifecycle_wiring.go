@@ -32,6 +32,7 @@ import (
 	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
+	schedsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/scheduling"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
@@ -61,6 +62,7 @@ type lifecycleStack struct {
 	artifactsDone    <-chan struct{}
 	autoReviewDone   <-chan struct{}
 	scmDone          <-chan struct{}
+	schedulingDone   <-chan struct{}
 	trackerDone      <-chan struct{}
 	herdr            *herdr.Server
 	automationDone   <-chan struct{}
@@ -189,6 +191,9 @@ func (l *lifecycleStack) Stop() {
 	if l.scmDone != nil {
 		<-l.scmDone
 	}
+	if l.schedulingDone != nil {
+		<-l.schedulingDone
+	}
 	if l.trackerDone != nil {
 		<-l.trackerDone
 	}
@@ -287,7 +292,7 @@ func telemetryEmitsSpawned(cfg config.Config) bool {
 // (issue #2685). The returned service is mounted at httpd APIDeps.Sessions.
 // It also returns the manager so the caller can wire Reconcile into the boot
 // sequence.
-func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, artifactVersions *artifactversions.Capturer, messenger ports.AgentMessenger, telemetry ports.EventSink, notifications notificationSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, reviewerRecoveryDone <-chan struct{}, defaults sessionmanager.SessionModeDefaults, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, reviewers *reviewer.Resolver, reviewRefresher reviewsvc.ThreadRefresher, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
+func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, artifactVersions *artifactversions.Capturer, messenger ports.AgentMessenger, telemetry ports.EventSink, notifications notificationSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, reviewerRecoveryDone <-chan struct{}, defaults sessionmanager.SessionModeDefaults, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, reviewers *reviewer.Resolver, reviewRefresher reviewsvc.ThreadRefresher, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, *schedsvc.Service, error) {
 	gitWS, err := gitworktree.New(gitworktree.Options{
 		// Per-session worktrees live under the data dir, so a single AO_DATA_DIR
 		// override moves all durable per-user state together.
@@ -299,13 +304,13 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Logger:       log,
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("session workspace: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("session workspace: %w", err)
 	}
 	scratchWS, err := scratchworkspace.New(scratchworkspace.Options{
 		ManagedRoot: filepath.Join(cfg.DataDir, "worktrees"),
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("scratch session workspace: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("scratch session workspace: %w", err)
 	}
 	ws := workspacerouter.New(workspacerouter.Deps{
 		Git:      gitWS,
@@ -367,7 +372,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	// writer.
 	if reviewers == nil {
 		if reviewers, err = reviewer.NewResolver(); err != nil {
-			return nil, nil, nil, fmt.Errorf("reviewer resolver: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("reviewer resolver: %w", err)
 		}
 	}
 	reviewerChat, _ := chat.(reviewcore.ReviewerChatController)
@@ -402,7 +407,18 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	}
 	reviewSvc := reviewsvc.New(reviewEngine, store, reviewOpts...)
 	mgr.SetReviewerTerminator(reviewSvc)
-	return sessionSvc, reviewSvc, mgr, nil
+	// The scheduler reads derived dependency facts from this service and
+	// launches through the manager, so it is built after both and latched back
+	// onto the service for wake-ups and explicit admits.
+	gate := schedsvc.New(schedsvc.Deps{
+		Store:             store,
+		Launcher:          mgr,
+		Snapshots:         sessionSvc,
+		Logger:            log,
+		BackgroundContext: ctx,
+	})
+	sessionSvc.SetSchedulingController(gate)
+	return sessionSvc, reviewSvc, mgr, gate, nil
 }
 
 // runtimeMessageSender is the narrow part of the concrete runtime needed by

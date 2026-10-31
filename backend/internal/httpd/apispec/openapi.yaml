@@ -5946,6 +5946,50 @@ paths:
       summary: Record a Codewhale lifecycle outbox event
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/admit:
+    post:
+      operationId: admitSession
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdmitSessionRequest'
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Admit a queued or blocked session now
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/agent-browser/*:
     get:
       operationId: getSessionAgentBrowser
@@ -6655,6 +6699,45 @@ paths:
       summary: Keep a viewed chat awake or release its view lease
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/complete:
+    post:
+      operationId: completeSession
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Record completion for an artifact or no-PR session
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/conversation:
     get:
       operationId: getSessionConversation
@@ -13180,6 +13263,11 @@ components:
       required:
       - path
       type: object
+    AdmitSessionRequest:
+      properties:
+        force:
+          type: boolean
+      type: object
     AgentAccountActivity:
       properties:
         currentStreakDays:
@@ -15751,6 +15839,13 @@ components:
       properties:
         activity:
           $ref: '#/components/schemas/DomainActivity'
+        admissionOverride:
+          type: boolean
+        admittedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         artifactFiles:
           items:
             $ref: '#/components/schemas/SessionArtifact'
@@ -15761,6 +15856,11 @@ components:
           type: boolean
         autoReviewEnabled:
           type: boolean
+        blockedReason:
+          description: 'Why the session is blocked: dependency_pending, dependency_failed,
+            dependency_cancelled, dependency_missing, dependency_cycle, dependency_unsatisfiable,
+            project_limit, team_limit, launch_failed, or invalid.'
+          type: string
         branch:
           type: string
         branchNaming:
@@ -15769,9 +15869,22 @@ components:
           $ref: '#/components/schemas/SessionBranchState'
         chatProviderPreserved:
           type: boolean
+        completedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         createdAt:
           format: date-time
           type: string
+        dependents:
+          items:
+            type: string
+          type: array
+        dependsOn:
+          items:
+            $ref: '#/components/schemas/SessionDependencyStatus'
+          type: array
         displayName:
           type: string
         displayStatus:
@@ -15852,6 +15965,8 @@ components:
           - artifact
           - pr_artifact
           type: string
+        parentSessionId:
+          type: string
         pinnedAt:
           format: date-time
           type:
@@ -15868,6 +15983,7 @@ components:
           type: string
         provisionState:
           enum:
+          - queued
           - provisioning
           - ready
           - failed
@@ -15910,6 +16026,14 @@ components:
           - auggie
           - cline
           - autohand
+          type: string
+        schedulingState:
+          enum:
+          - immediate
+          - queued
+          - blocked
+          - admitted
+          - cancelled
           type: string
         scmStatus:
           enum:
@@ -18741,6 +18865,8 @@ components:
           items:
             $ref: '#/components/schemas/DomainReviewerConfig'
           type: array
+        scheduling:
+          $ref: '#/components/schemas/SchedulingConfig'
         sessionPrefix:
           type: string
         symlinks:
@@ -19450,6 +19576,17 @@ components:
       - path
       - name
       type: object
+    SchedulingConfig:
+      properties:
+        defaultDependencyState:
+          type: string
+        maxActivePerTeam:
+          type: integer
+        maxActiveSessions:
+          type: integer
+        maxDependenciesPerSession:
+          type: integer
+      type: object
     SendConversationMessageRequest:
       properties:
         attachments:
@@ -19621,6 +19758,38 @@ components:
       required:
       - commits
       - unpushed
+      type: object
+    SessionDependencyInput:
+      properties:
+        requiredState:
+          enum:
+          - ready
+          - merged
+          - completed
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      type: object
+    SessionDependencyStatus:
+      properties:
+        dependencyState:
+          type: string
+        requiredState:
+          enum:
+          - ready
+          - merged
+          - completed
+          type: string
+        satisfied:
+          type: boolean
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - requiredState
+      - satisfied
       type: object
     SessionHistoryResponse:
       properties:
@@ -21132,6 +21301,14 @@ components:
         clientRequestId:
           maxLength: 128
           type: string
+        dependsOn:
+          items:
+            $ref: '#/components/schemas/SessionDependencyInput'
+          type: array
+        dependsOnSessionIds:
+          items:
+            type: string
+          type: array
         displayName:
           maxLength: 100
           type: string
@@ -21204,6 +21381,12 @@ components:
         requestedOutput:
           enum:
           - artifact
+          type: string
+        requiredDependencyState:
+          enum:
+          - ready
+          - merged
+          - completed
           type: string
         trackerProvider:
           enum:

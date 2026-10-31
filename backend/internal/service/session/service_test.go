@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -88,6 +89,7 @@ type fakeStore struct {
 	getCleanupFactsCalls  int
 	listCleanupFactsCalls int
 	cleanupFactsRequested []domain.SessionID
+	dependencies          map[domain.SessionID][]domain.SessionDependency
 }
 
 func newFakeStore() *fakeStore {
@@ -104,6 +106,7 @@ func newFakeStore() *fakeStore {
 		threads:        map[string][]domain.PullRequestReviewThread{},
 		comments:       map[string][]domain.PullRequestComment{},
 		reviewRuns:     map[domain.SessionID][]domain.CurrentHeadReviewRun{},
+		dependencies:   map[domain.SessionID][]domain.SessionDependency{},
 	}
 }
 
@@ -368,6 +371,41 @@ func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.S
 	return r, ok, nil
 }
 
+// ListSessionDependencies serves the create-time cycle check. Edges recorded on
+// either side let a test build a cyclic graph the daemon could only inherit.
+func (f *fakeStore) ListSessionDependencies(_ context.Context, id domain.SessionID) ([]domain.SessionDependency, error) {
+	return append([]domain.SessionDependency(nil), f.dependencies[id]...), nil
+}
+
+// ListSessionDependenciesForSessions is the batch read-model form.
+func (f *fakeStore) ListSessionDependenciesForSessions(_ context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.SessionDependency, error) {
+	out := make(map[domain.SessionID][]domain.SessionDependency, len(ids))
+	for _, id := range ids {
+		out[id] = append([]domain.SessionDependency(nil), f.dependencies[id]...)
+	}
+	return out, nil
+}
+
+// ListDependentSessionIDsForSessions is the reverse lookup for the detail panel.
+func (f *fakeStore) ListDependentSessionIDsForSessions(_ context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.SessionID, error) {
+	wanted := make(map[domain.SessionID]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	out := make(map[domain.SessionID][]domain.SessionID)
+	for _, edges := range f.dependencies {
+		for _, edge := range edges {
+			if wanted[edge.DependsOnSessionID] {
+				out[edge.DependsOnSessionID] = append(out[edge.DependsOnSessionID], edge.SessionID)
+			}
+		}
+	}
+	for id := range out {
+		sort.Slice(out[id], func(i, j int) bool { return out[id][i] < out[id][j] })
+	}
+	return out, nil
+}
+
 func (f *fakeStore) GetSessionByClientRequestID(_ context.Context, id string) (domain.SessionRecord, bool, error) {
 	for _, rec := range f.sessions {
 		if id != "" && rec.ClientRequestID == id {
@@ -425,6 +463,18 @@ func (f *fakeStore) SetSessionPinned(_ context.Context, id domain.SessionID, isP
 	r.IsPinned = isPinned
 	r.PinnedAt = pinnedAt
 	r.UpdatedAt = updatedAt
+	f.sessions[id] = r
+	return true, nil
+}
+
+func (f *fakeStore) SetSessionCompleted(_ context.Context, id domain.SessionID, completedAt time.Time) (bool, error) {
+	r, ok := f.sessions[id]
+	if !ok || r.IsTerminated {
+		return false, nil
+	}
+	if r.CompletedAt == nil {
+		r.CompletedAt = &completedAt
+	}
 	f.sessions[id] = r
 	return true, nil
 }
@@ -2640,6 +2690,7 @@ type fakeCommander struct {
 	requestKillResult *sessionmanager.KillResult
 	spawnFunc         func(ports.SpawnConfig) domain.SessionRecord
 	spawnCalls        int
+	reserveCalls      int
 	spawned           bool
 	spawnedCfg        ports.SpawnConfig
 	spawnCtx          context.Context
@@ -2686,6 +2737,12 @@ func (f *fakeCommander) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domai
 	}
 	return domain.SessionRecord{ID: "mer-9", ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness}, len(cfg.Prompt), 0, nil
 }
+func (f *fakeCommander) ReserveSpawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error) {
+	f.reserveCalls++
+	rec, _, _, err := f.Spawn(ctx, cfg)
+	return rec, err
+}
+
 func (*fakeCommander) PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error) {
 	return "", nil
 }

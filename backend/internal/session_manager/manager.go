@@ -338,8 +338,14 @@ type Store interface {
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
 	ListWorkspaceRepos(ctx context.Context, projectID string) ([]domain.WorkspaceRepoRecord, error)
 	CreateSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, error)
+	// CreateSessionWithDependencies reserves a session row and its incoming
+	// dependency edges in one transaction.
+	CreateSessionWithDependencies(ctx context.Context, rec domain.SessionRecord, deps []domain.SessionDependency) (domain.SessionRecord, error)
 	CreateAutomationSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error)
 	CreateClientRequestSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error)
+	// CancelQueuedSession terminates a pre-launch reservation that owns no
+	// workspace, so kill has nothing to tear down.
+	CancelQueuedSession(ctx context.Context, id domain.SessionID, now time.Time) (bool, error)
 	GetSessionByClientRequestID(ctx context.Context, id string) (domain.SessionRecord, bool, error)
 	CommitClientRequestSession(ctx context.Context, id domain.SessionID) error
 	UpdateSession(ctx context.Context, rec domain.SessionRecord) error
@@ -527,6 +533,11 @@ type Manager struct {
 
 	terminalInputGateMu sync.Mutex
 	terminalInputGate   TerminalInputGate
+	// launchLocks serializes materializing one reserved session. A queued row
+	// has exactly one launcher in a daemon; the lock keeps admission recovery
+	// and an explicit admit from racing the same workspace.
+	launchLocksMu sync.Mutex
+	launchLocks   map[domain.SessionID]*sync.Mutex
 	// updateStops holds input gates of terminals stopped for an update.
 	updateStops updateStops
 	// versionRetries are sessions a version move could not start again.
@@ -945,6 +956,7 @@ func New(d Deps) *Manager {
 		},
 		logger:         d.Logger,
 		workspaceGates: make(map[domain.ProjectID]*sync.Mutex),
+		launchLocks:    make(map[domain.SessionID]*sync.Mutex),
 	}
 	if m.clock == nil {
 		// UTC so spawn-stamped CreatedAt/UpdatedAt match every other session
@@ -986,6 +998,9 @@ func New(d Deps) *Manager {
 // materialization fails the still-seed row is deleted outright; a later failure
 // parks the row as terminated and rolls back what was built.
 func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
+	// The persisted queued config keeps the caller's mode, not the resolved one:
+	// an inherited Chat preference must still be allowed to fall back at launch.
+	requestedMode := cfg.RequestedMode
 	if cfg.RequestedOutput == domain.RequestedOutputArtifact && m.artifactDir("") == "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrArtifactOutputUnavailable)
 	}
@@ -1015,6 +1030,13 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	if projectKind == domain.ProjectKindScratch && strings.TrimSpace(cfg.Branch) != "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrScratchBranchUnsupported)
+	}
+	if cfg.ParentSessionID != "" {
+		parentID, err := m.resolveSpawnParent(ctx, cfg.ProjectID, cfg.ParentSessionID)
+		if err != nil {
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+		}
+		cfg.ParentSessionID = parentID
 	}
 	if cfg.ParentSessionID != "" && cfg.AgentConfig.Permissions == "" {
 		permissions, err := m.inheritedSpawnPermissions(ctx, cfg.ProjectID, cfg.ParentSessionID)
@@ -1130,7 +1152,10 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	asyncChat := cfg.Async && mode == domain.SessionModeChat && m.chat != nil && (cfg.Kind == domain.KindOrchestrator || cfg.Kind == domain.KindWorker)
 
 	var prep *taskPreparation
-	if cfg.AutomationRunID == nil && cfg.Branch == "" {
+	// Queued and launched rows never reuse a speculative worktree: preparation
+	// is not a queue (it holds disk and hides the row), so a dependency spawn
+	// takes the ordinary workspace path at launch.
+	if cfg.AutomationRunID == nil && cfg.Branch == "" && len(cfg.Dependencies) == 0 && cfg.ResumeSessionID == "" {
 		prep = m.claimTaskPreparation(cfg.TaskPreparation, cfg.ProjectID)
 	}
 	var rec domain.SessionRecord
@@ -1138,18 +1163,39 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		rec = prep.record
 	} else {
 		seed := seedRecord(cfg, project.Config, m.clock())
+		if err := applySchedulingSeed(&seed, cfg, requestedMode); err != nil {
+			return domain.SessionRecord{}, 0, 0, err
+		}
 		if mode == domain.SessionModeChat {
 			seed.Metadata.Model = cfg.AgentConfig.Model
 			seed.Metadata.Effort = cfg.AgentConfig.Effort
 		}
-		if cfg.ClientRequestID != "" {
+		switch {
+		case cfg.ResumeSessionID != "":
+			// A scheduler launch materializes the reserved row. Any fact that
+			// says it already reached a workspace wins over a second launch,
+			// even if two launchers raced here.
+			existing, found, err := m.store.GetSession(ctx, cfg.ResumeSessionID)
+			if err != nil {
+				return domain.SessionRecord{}, 0, 0, wrapSpawnStageEarly(ErrSpawnCreate, err)
+			}
+			if !found {
+				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ports.ErrSessionNotFound)
+			}
+			if existing.IsTerminated || existing.Metadata.WorkspacePath != "" || existing.Metadata.RuntimeHandleID != "" {
+				return existing, 0, 0, fmt.Errorf("spawn %s: session is already launched or cancelled", existing.ID)
+			}
+			rec = existing
+		case len(cfg.Dependencies) > 0:
+			rec, err = m.store.CreateSessionWithDependencies(ctx, seed, queuedDependencyRows(cfg.Dependencies, m.clock()))
+		case cfg.ClientRequestID != "":
 			var fresh bool
 			rec, fresh, err = m.store.CreateClientRequestSession(ctx, seed)
 			if err == nil && !fresh {
 				replay, replayErr := replayClientRequest(rec, cfg.ClientRequestHash)
 				return replay, 0, 0, replayErr
 			}
-		} else if cfg.AutomationRunID != nil {
+		case cfg.AutomationRunID != nil:
 			var fresh bool
 			rec, fresh, err = m.store.CreateAutomationSession(ctx, seed)
 			if err == nil && !fresh {
@@ -1162,7 +1208,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 				}
 				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: automation session %s has an incomplete prior launch", rec.ID)
 			}
-		} else {
+		default:
 			rec, err = m.store.CreateSession(ctx, seed)
 		}
 		if err != nil {
@@ -1170,6 +1216,17 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 	id := rec.ID
+	// A dependency spawn stops here: the row is durable, and the scheduler owns
+	// everything from admission onwards. No artifact directory, prompt file,
+	// worktree, or terminal exists yet.
+	if cfg.ResumeSessionID == "" && len(cfg.Dependencies) > 0 {
+		if cfg.ClientRequestID != "" {
+			if err := m.store.CommitClientRequestSession(ctx, id); err != nil {
+				return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCommit, err)
+			}
+		}
+		return rec, 0, 0, nil
+	}
 	if m.agentAccounts != nil {
 		if err := m.agentAccounts.BindSession(ctx, id, cfg.Harness, cfg.AgentAccountID); err != nil {
 			if prep != nil {
@@ -1594,6 +1651,132 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
+// ReserveSpawn persists a queued session row with its dependency edges and
+// stops before any workspace or controller exists. The scheduler launches it
+// later with LaunchSpawn.
+func (m *Manager) ReserveSpawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error) {
+	if len(cfg.Dependencies) == 0 {
+		return domain.SessionRecord{}, fmt.Errorf("spawn: reserve requires at least one dependency")
+	}
+	cfg.ResumeSessionID = ""
+	rec, _, _, err := m.Spawn(ctx, cfg)
+	return rec, err
+}
+
+// LaunchSpawn materializes an admitted reservation. It re-resolves the request
+// from the row, so a long wait cannot launch with a stale project config, and
+// serializes on the per-session launch lock so two launchers cannot both build
+// a workspace.
+func (m *Manager) LaunchSpawn(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	unlock := m.lockSessionLaunch(id)
+	defer unlock()
+	rec, found, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("spawn %s: %w", id, err)
+	}
+	if !found {
+		return domain.SessionRecord{}, fmt.Errorf("spawn %s: %w", id, ports.ErrSessionNotFound)
+	}
+	if rec.IsTerminated {
+		return domain.SessionRecord{}, fmt.Errorf("spawn %s: session is terminated", id)
+	}
+	if state := rec.SchedulingState.WithDefault(); state != domain.SchedulingAdmitted {
+		// Launching a queued row would bypass dependency and limit checks; the
+		// scheduler owns that transition.
+		return domain.SessionRecord{}, fmt.Errorf("spawn %s: session is %s, not admitted", id, state)
+	}
+	if rec.Metadata.WorkspacePath != "" || rec.Metadata.RuntimeHandleID != "" {
+		return domain.SessionRecord{}, fmt.Errorf("spawn %s: session is already launched", id)
+	}
+	cfg, err := decodeQueuedSpawnConfig(rec.QueuedSpawnConfig)
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("spawn %s: %w", id, err)
+	}
+	// Environment-dependent validation is authoritative at launch: the harness
+	// may have been uninstalled, or its binary removed from PATH, while the
+	// session waited in the queue. The service checked at reserve for fast
+	// feedback; this check is the one the launch depends on.
+	if err := m.ensureLaunchAgentReadiness(ctx, cfg.Harness); err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("spawn %s: %w", id, err)
+	}
+	// A launch never replays create-side identity: the request key was committed
+	// at reserve, an automation run has exactly one row, and a preparation token
+	// is a UI hint that must not leak into the materialized session.
+	cfg.ResumeSessionID = id
+	cfg.ClientRequestID = ""
+	cfg.ClientRequestHash = ""
+	cfg.AutomationRunID = nil
+	cfg.TaskPreparation = ""
+	cfg.Attachments = nil
+	out, _, _, err := m.Spawn(ctx, cfg)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	return out, nil
+}
+
+// ensureLaunchAgentReadiness re-runs the daemon's agent readiness check at
+// launch. It reports ports.ErrAgentBinaryNotFound when the harness is gone so
+// callers keep the same sentinel the immediate-spawn path uses.
+func (m *Manager) ensureLaunchAgentReadiness(ctx context.Context, harness domain.AgentHarness) error {
+	if m.agentReadiness == nil || harness == "" {
+		return nil
+	}
+	readiness, err := m.agentReadiness.EnsureAgentReadiness(ctx, string(harness), domain.AgentReadinessPurposeLaunch)
+	if err != nil {
+		return err
+	}
+	if readiness.Installation.State == domain.AgentInstallationNotInstalled {
+		return fmt.Errorf("%w: %s", ports.ErrAgentBinaryNotFound, harness)
+	}
+	return nil
+}
+
+func (m *Manager) lockSessionLaunch(id domain.SessionID) func() {
+	m.launchLocksMu.Lock()
+	lock, ok := m.launchLocks[id]
+	if !ok {
+		lock = &sync.Mutex{}
+		m.launchLocks[id] = lock
+	}
+	m.launchLocksMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
+// applySchedulingSeed marks a dependency spawn as pre-launch and stores the
+// request the scheduler will launch. An immediate spawn is untouched.
+func applySchedulingSeed(seed *domain.SessionRecord, cfg ports.SpawnConfig, requestedMode domain.SessionMode) error {
+	if cfg.ResumeSessionID != "" || len(cfg.Dependencies) == 0 {
+		return nil
+	}
+	queueCfg := cfg
+	queueCfg.RequestedMode = requestedMode
+	raw, err := encodeQueuedSpawnConfig(queueCfg)
+	if err != nil {
+		return err
+	}
+	seed.SchedulingState = domain.SchedulingBlocked
+	seed.BlockedReason = string(domain.BlockedDependencyPending)
+	seed.ProvisionState = domain.SessionProvisionProvisioning
+	seed.QueuedSpawnConfig = raw
+	return nil
+}
+
+// queuedDependencyRows converts validated specs into stored edges. The store
+// fills each session id from the row it creates, so it is left empty here.
+func queuedDependencyRows(specs []domain.SessionDependencySpec, now time.Time) []domain.SessionDependency {
+	out := make([]domain.SessionDependency, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, domain.SessionDependency{
+			DependsOnSessionID: spec.SessionID,
+			RequiredState:      spec.RequiredState,
+			CreatedAt:          now,
+		})
+	}
+	return out
+}
+
 func (m *Manager) markAutomationLaunchCompleted(ctx context.Context, id domain.SessionID) error {
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
@@ -1817,6 +2000,23 @@ func containsString(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+// resolveSpawnParent normalizes the caller-supplied spawn parent into the one
+// link AO persists. A missing, cross-project, or hidden parent leaves a root:
+// the link records real request history, never a best guess.
+func (m *Manager) resolveSpawnParent(ctx context.Context, projectID domain.ProjectID, parentID domain.SessionID) (domain.SessionID, error) {
+	if parentID == "" {
+		return "", nil
+	}
+	parent, ok, err := m.store.GetSession(ctx, parentID)
+	if err != nil {
+		return "", fmt.Errorf("load parent session %s: %w", parentID, err)
+	}
+	if !ok || parent.ProjectID != projectID || parent.IsTaskPreparation {
+		return "", nil
+	}
+	return parent.ID, nil
 }
 
 // inheritedSpawnPermissions derives a worker override from its requesting chat
@@ -2659,6 +2859,32 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	}
 	if !ok {
 		return KillResult{}, nil // already gone: benign race
+	}
+	// A queued or blocked session owns no workspace, runtime, or controller, so
+	// killing it is a single durable transition. The launch lock keeps this
+	// from racing the scheduler mid-launch: if a launch wins, the row is no
+	// longer pre-launch and the ordinary teardown below owns it.
+	if rec.SchedulingState.IsPreLaunch() {
+		unlock := m.lockSessionLaunch(id)
+		cancelled, cancelErr := m.store.CancelQueuedSession(ctx, id, m.clock())
+		unlock()
+		if cancelErr != nil {
+			return KillResult{}, fmt.Errorf("kill %s: cancel queued session: %w", id, cancelErr)
+		}
+		if cancelled {
+			return KillResult{}, nil
+		}
+		reloaded, stillThere, reloadErr := m.store.GetSession(ctx, id)
+		if reloadErr != nil {
+			return KillResult{}, fmt.Errorf("kill %s: reload after admission: %w", id, reloadErr)
+		}
+		if !stillThere {
+			return KillResult{}, nil
+		}
+		if reloaded.SchedulingState.IsPreLaunch() {
+			return KillResult{}, fmt.Errorf("kill %s: session is still queued", id)
+		}
+		rec = reloaded
 	}
 	m.stopPreviewBestEffort(ctx, id)
 	m.destroyBrowserBestEffort(ctx, id)
@@ -5709,6 +5935,7 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		AutomationRunID:   cfg.AutomationRunID,
 		ClientRequestID:   cfg.ClientRequestID,
 		ClientRequestHash: cfg.ClientRequestHash,
+		ParentSessionID:   cfg.ParentSessionID,
 		Kind:              cfg.Kind,
 		CreatedAt:         now,
 		UpdatedAt:         now,

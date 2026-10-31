@@ -573,6 +573,32 @@ type SpawnSessionRequest struct {
 	// its bytes as standard base64 (no data: URL prefix). The daemon writes them
 	// into the session worktree and appends path references to the prompt.
 	Attachments []AttachmentInput `json:"attachments,omitempty"`
+
+	// DependsOn names sessions that must reach their required state before this
+	// one may launch. The dependent is persisted blocked with no workspace and
+	// admitted by the scheduler. Send either this structured form or the flat
+	// dependsOnSessionIds/requiredDependencyState form, never both.
+	DependsOn []SessionDependencyInput `json:"dependsOn,omitempty"`
+	// DependsOnSessionIds is the flat CLI-compatible form: every listed session
+	// must reach RequiredDependencyState.
+	DependsOnSessionIds []domain.SessionID `json:"dependsOnSessionIds,omitempty"`
+	// RequiredDependencyState applies to every DependsOnSessionIds entry. Empty
+	// follows each dependency's output-type default.
+	RequiredDependencyState domain.DependencyRequiredState `json:"requiredDependencyState,omitempty" enum:"ready,merged,completed"`
+}
+
+// SessionDependencyInput is one incoming dependency edge in a spawn request.
+// RequiredState is optional; empty follows the dependency's output-type default.
+type SessionDependencyInput struct {
+	SessionID     domain.SessionID               `json:"sessionId"`
+	RequiredState domain.DependencyRequiredState `json:"requiredState,omitempty" enum:"ready,merged,completed"`
+}
+
+// AdmitSessionRequest is the optional body of
+// POST /api/v1/sessions/{sessionId}/admit. Force bypasses dependency and limit
+// checks and records the override.
+type AdmitSessionRequest struct {
+	Force bool `json:"force,omitempty"`
 }
 
 // AttachmentInput is one file attached to a spawn, delegate, stage, or send

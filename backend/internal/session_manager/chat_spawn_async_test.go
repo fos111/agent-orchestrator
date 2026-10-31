@@ -1016,6 +1016,24 @@ func TestFailInterruptedProvisioning(t *testing.T) {
 		ID: "mer-2", ProjectID: chatTestProject, Kind: domain.KindWorker,
 		Mode: domain.SessionModeChat, ProvisionState: domain.SessionProvisionReady,
 	}
+	// A dependency reservation is not a background start: queued and blocked
+	// rows have not launched yet, and an admitted row belongs to the scheduler's
+	// recovery. The restart sweep must leave all three for scheduling to settle.
+	st.sessions["mer-3"] = domain.SessionRecord{
+		ID: "mer-3", ProjectID: chatTestProject, Kind: domain.KindWorker,
+		ProvisionState:  domain.SessionProvisionProvisioning,
+		SchedulingState: domain.SchedulingBlocked,
+	}
+	st.sessions["mer-4"] = domain.SessionRecord{
+		ID: "mer-4", ProjectID: chatTestProject, Kind: domain.KindWorker,
+		ProvisionState:  domain.SessionProvisionProvisioning,
+		SchedulingState: domain.SchedulingQueued,
+	}
+	st.sessions["mer-5"] = domain.SessionRecord{
+		ID: "mer-5", ProjectID: chatTestProject, Kind: domain.KindWorker,
+		ProvisionState:  domain.SessionProvisionProvisioning,
+		SchedulingState: domain.SchedulingAdmitted,
+	}
 
 	if err := m.FailInterruptedProvisioning(context.Background()); err != nil {
 		t.Fatalf("fail interrupted: %v", err)
@@ -1028,6 +1046,11 @@ func TestFailInterruptedProvisioning(t *testing.T) {
 	}
 	if got := st.sessions["mer-2"].ProvisionState; got != domain.SessionProvisionReady {
 		t.Fatalf("healthy session = %q, want untouched", got)
+	}
+	for _, id := range []domain.SessionID{"mer-3", "mer-4", "mer-5"} {
+		if got := st.sessions[id].ProvisionState; got != domain.SessionProvisionProvisioning {
+			t.Fatalf("scheduled session %s = %q, want untouched provisioning", id, got)
+		}
 	}
 }
 

@@ -38,6 +38,7 @@ type Store interface {
 	RenameSession(ctx context.Context, id domain.SessionID, displayName string, updatedAt time.Time) (bool, error)
 	RenameSessionIfDisplayName(ctx context.Context, id domain.SessionID, currentDisplayName, displayName string, updatedAt time.Time) (bool, error)
 	SetSessionPreviewURL(ctx context.Context, id domain.SessionID, previewURL string, updatedAt time.Time) (bool, error)
+	SetSessionCompleted(ctx context.Context, id domain.SessionID, completedAt time.Time) (bool, error)
 	SetSessionTerminateOnPRMerge(ctx context.Context, id domain.SessionID, terminate bool, updatedAt time.Time) (bool, error)
 	SetSessionAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error)
 	SetSessionAutoInjectCI(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error)
@@ -50,6 +51,8 @@ type Store interface {
 	ListCurrentHeadReviewRunsForSession(ctx context.Context, id domain.SessionID) ([]domain.CurrentHeadReviewRun, error)
 	ListCurrentHeadReviewRunsForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.CurrentHeadReviewRun, error)
 	ListInterruptedSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID]bool, error)
+	ListSessionDependenciesForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.SessionDependency, error)
+	ListDependentSessionIDsForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.SessionID, error)
 	ListPRsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.PullRequest, error)
 	ListReportedPRURLs(ctx context.Context, id domain.SessionID) ([]string, error)
 	ListSessionWorktrees(ctx context.Context, id domain.SessionID) ([]domain.SessionWorktreeRecord, error)
@@ -81,6 +84,9 @@ type ListFilter struct {
 // *sessionmanager.Manager in production, a fake in tests.
 type commander interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error)
+	// ReserveSpawn persists a queued session without a workspace; the scheduler
+	// launches it later through LaunchSpawn.
+	ReserveSpawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error)
 	RunBackgroundTask(ctx context.Context, id domain.SessionID, systemPrompt, prompt string) (string, error)
 	RestoreWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
 	ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
@@ -255,6 +261,10 @@ type Service struct {
 	// runsOnComputerLogin reports whether a new session would launch on the
 	// computer's own CLI login rather than a saved account. Nil means always.
 	runsOnComputerLogin func(context.Context, domain.AgentHarness, string) bool
+	// scheduling is the dependency scheduler's controllable surface. It is
+	// latched after construction because the scheduler reads this service's
+	// dependency snapshots while this service wakes its queue.
+	scheduling SchedulingController
 }
 
 // SetComputerLoginCheck late-binds the account check the launch gate needs: the
@@ -267,6 +277,20 @@ func (s *Service) SetComputerLoginCheck(check func(ctx context.Context, harness 
 // services have been constructed. It performs no provider or filesystem probes.
 func (s *Service) SetChatProviderPreserver(preserves func(domain.SessionID) bool) {
 	s.chatProviderPreserved = preserves
+}
+
+// SchedulingController is the dependency scheduler's controllable surface. The
+// session service wakes it after any fact that can change admission and
+// delegates explicit admit requests to it, so scheduling transitions keep one
+// writer.
+type SchedulingController interface {
+	Notify(projectID domain.ProjectID)
+	Admit(ctx context.Context, id domain.SessionID, force bool) (domain.SessionRecord, error)
+}
+
+// SetSchedulingController late-binds the scheduler after both services exist.
+func (s *Service) SetSchedulingController(controller SchedulingController) {
+	s.scheduling = controller
 }
 
 // New wires a controller-facing session service over an internal session Manager.
@@ -340,6 +364,16 @@ func (s *Service) SetUsageArchiveFlush(flush func(context.Context)) {
 // Spawn creates a session and returns the API-facing read model plus
 // ephemeral prompt size measurements.
 func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
+	if len(cfg.Dependencies) > 0 {
+		if cfg.ProjectID == "" {
+			return domain.Session{}, 0, 0, apierr.Invalid("DEPENDENCY_STANDALONE_UNSUPPORTED",
+				"Dependencies require a registered project; a standalone session cannot depend on another session", nil)
+		}
+		if cfg.Kind != "" && cfg.Kind != domain.KindWorker {
+			return domain.Session{}, 0, 0, apierr.Invalid("DEPENDENCY_STANDALONE_UNSUPPORTED",
+				"Orchestrator sessions cannot depend on another session", nil)
+		}
+	}
 	if rec, found, err := s.replayClientRequest(ctx, cfg.ClientRequestID, cfg.ClientRequestHash); err != nil {
 		return domain.Session{}, 0, 0, err
 	} else if found {
@@ -412,6 +446,11 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 	cfg = s.withIssueContext(ctx, cfg, project)
+	dependencies, err := s.resolveSpawnDependencies(ctx, cfg, project)
+	if err != nil {
+		return domain.Session{}, 0, 0, err
+	}
+	cfg.Dependencies = dependencies
 	rec, promptBytes, systemPromptBytes, err := s.spawnWithTelemetry(ctx, cfg, project)
 	if err != nil {
 		s.invalidateAgentReadinessAfterLaunchFailure(cfg.Harness, err)
@@ -442,7 +481,16 @@ func (s *Service) spawnWithTelemetry(ctx context.Context, cfg ports.SpawnConfig,
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("count sessions: %w", err)
 	}
-	rec, promptBytes, systemPromptBytes, err := s.manager.Spawn(ctx, cfg)
+	var rec domain.SessionRecord
+	var promptBytes, systemPromptBytes int
+	if len(cfg.Dependencies) > 0 {
+		// A dependency spawn reserves the row and stops; the scheduler owns the
+		// workspace and controller. It builds no prompt now, so both
+		// measurements stay zero.
+		rec, err = s.manager.ReserveSpawn(ctx, cfg)
+	} else {
+		rec, promptBytes, systemPromptBytes, err = s.manager.Spawn(ctx, cfg)
+	}
 	if err != nil {
 		s.emitSpawnFailed(ctx, cfg, err, s.now().Sub(start).Milliseconds())
 		return domain.SessionRecord{}, 0, 0, err
@@ -450,6 +498,11 @@ func (s *Service) spawnWithTelemetry(ctx context.Context, cfg ports.SpawnConfig,
 	s.emitSpawned(ctx, rec, s.now().Sub(start).Milliseconds())
 	if firstSession {
 		s.emitFirstSessionSpawned(ctx, rec, project)
+	}
+	if len(cfg.Dependencies) > 0 {
+		// The reservation is durable; let the scheduler evaluate it now instead
+		// of on the next tick. Dependencies may already be satisfied.
+		s.notifyScheduling(rec.ProjectID)
 	}
 	return rec, promptBytes, systemPromptBytes, nil
 }
@@ -1007,6 +1060,7 @@ func restoreModeView(mode sessionmanager.RestoreMode) RestoreModeView {
 // Kill delegates terminal intent and teardown to the internal manager.
 func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	s.cancelTitleRefinement(id)
+	projectID := s.projectIDFor(ctx, id)
 	freed, err := s.manager.Kill(ctx, id)
 	if err != nil {
 		apiErr := toAPIError(err)
@@ -1017,12 +1071,15 @@ func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	if s.usageArchiveFlush != nil {
 		s.usageArchiveFlush(ctx)
 	}
+	// A killed dependency blocks its dependents; they are not cancelled.
+	s.notifyScheduling(projectID)
 	return freed, nil
 }
 
 // RequestKill acknowledges terminal intent without waiting for cleanup scripts.
 func (s *Service) RequestKill(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error) {
 	s.cancelTitleRefinement(id)
+	projectID := s.projectIDFor(ctx, id)
 	result, err := s.manager.RequestKill(ctx, id)
 	if err != nil {
 		apiErr := toAPIError(err)
@@ -1037,7 +1094,58 @@ func (s *Service) RequestKill(ctx context.Context, id domain.SessionID) (session
 	if s.usageArchiveFlush != nil {
 		s.usageArchiveFlush(ctx)
 	}
+	s.notifyScheduling(projectID)
 	return result, nil
+}
+
+// Complete records the explicit completion fact a non-PR task needs, because
+// neither a PR merge nor a close will ever arrive for it. It is idempotent: a
+// session that is already complete returns the same read model.
+func (s *Service) Complete(ctx context.Context, id domain.SessionID) (domain.Session, error) {
+	rec, found, err := s.store.GetSession(ctx, id)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("complete %s: %w", id, err)
+	}
+	if !found || rec.IsTaskPreparation {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if rec.IsTerminated && rec.CompletedAt == nil {
+		return domain.Session{}, apierr.Conflict("SESSION_TERMINATED", "A terminated session cannot be completed", nil)
+	}
+	if _, err := s.store.SetSessionCompleted(ctx, id, s.now()); err != nil {
+		return domain.Session{}, err
+	}
+	s.notifyScheduling(rec.ProjectID)
+	return s.Get(ctx, id)
+}
+
+// Admit asks the dependency scheduler to admit a queued or blocked session now.
+// A forced admit bypasses dependencies and limits and records the override.
+func (s *Service) Admit(ctx context.Context, id domain.SessionID, force bool) (domain.Session, error) {
+	if s.scheduling == nil {
+		return domain.Session{}, apierr.Conflict("SESSION_NOT_ADMITTABLE", "This build cannot schedule sessions", nil)
+	}
+	rec, err := s.scheduling.Admit(ctx, id, force)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	return s.Get(ctx, rec.ID)
+}
+
+func (s *Service) notifyScheduling(projectID domain.ProjectID) {
+	if s.scheduling != nil && projectID != "" {
+		s.scheduling.Notify(projectID)
+	}
+}
+
+// projectIDFor reads a session's project id before a destructive operation, so
+// the scheduler can still be woken for the dependents afterwards.
+func (s *Service) projectIDFor(ctx context.Context, id domain.SessionID) domain.ProjectID {
+	rec, found, err := s.store.GetSession(ctx, id)
+	if err != nil || !found {
+		return ""
+	}
+	return rec.ProjectID
 }
 
 // artifactDeleter deletes a session's artifact files and version rows. The
@@ -1401,6 +1509,9 @@ func (s *Service) sessionsFromRecords(ctx context.Context, filtered []domain.Ses
 		}
 		out = append(out, sess)
 	}
+	if err := s.attachDependencies(ctx, out); err != nil {
+		return nil, err
+	}
 	if s.statusRecoveryRevision() != recoveryRevision {
 		for i := range out {
 			out[i].StatusReadiness = "checking"
@@ -1490,6 +1601,11 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 	if err != nil {
 		return domain.Session{}, err
 	}
+	dependent := []domain.Session{sess}
+	if err := s.attachDependencies(ctx, dependent); err != nil {
+		return domain.Session{}, err
+	}
+	sess = dependent[0]
 	if s.statusRecoveryRevision() != recoveryRevision {
 		sess.StatusReadiness = "checking"
 	}
@@ -1557,6 +1673,12 @@ func (s *Service) toSessionWithFacts(ctx context.Context, rec domain.SessionReco
 		SessionStatusReadiness(domain.SessionRecord) string
 	}); ok {
 		readiness = recovery.SessionStatusReadiness(rec)
+	}
+	if rec.SchedulingState.IsPreLaunch() {
+		// A queued or blocked row owns no workspace yet. The persisted column
+		// keeps the pre-scheduling value (its CHECK predates scheduling), so
+		// the wire read model reports the honest pre-launch value instead.
+		rec.ProvisionState = domain.SessionProvisionQueued
 	}
 	return domain.Session{
 		SessionRecord:    rec,

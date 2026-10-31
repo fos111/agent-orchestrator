@@ -49,6 +49,8 @@ type fakeStore struct {
 	cleanupMu                          sync.Mutex
 	cleanupFacts                       map[domain.SessionID]domain.SessionCleanupRecord
 	sessions                           map[domain.SessionID]domain.SessionRecord
+	dependenciesMu                     sync.Mutex
+	dependencies                       map[domain.SessionID][]domain.SessionDependency
 	pr                                 map[domain.SessionID]domain.PRFacts
 	projects                           map[string]domain.ProjectRecord
 	conversations                      map[domain.SessionID]domain.ConversationRecord
@@ -76,6 +78,7 @@ type fakeStore struct {
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		sessions:      map[domain.SessionID]domain.SessionRecord{},
+		dependencies:  map[domain.SessionID][]domain.SessionDependency{},
 		pr:            map[domain.SessionID]domain.PRFacts{},
 		projects:      map[string]domain.ProjectRecord{},
 		conversations: map[domain.SessionID]domain.ConversationRecord{},
@@ -102,6 +105,45 @@ func (f *fakeStore) CreateSession(_ context.Context, rec domain.SessionRecord) (
 	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, f.num))
 	f.sessions[rec.ID] = rec
 	return rec, nil
+}
+
+// CancelQueuedSession mirrors the pre-launch cancel: it only applies while the
+// row is queued or blocked, and it never touches workspace facts.
+func (f *fakeStore) CancelQueuedSession(_ context.Context, id domain.SessionID, now time.Time) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok || !rec.SchedulingState.IsPreLaunch() {
+		return false, nil
+	}
+	rec.SchedulingState = domain.SchedulingCancelled
+	rec.BlockedReason = ""
+	rec.IsTerminated = true
+	rec.ProvisionState = domain.SessionProvisionReady
+	rec.UpdatedAt = now
+	f.sessions[id] = rec
+	return true, nil
+}
+
+// CreateSessionWithDependencies mirrors the atomic store write: the row and its
+// edges land together, and a duplicate edge fails the whole create.
+func (f *fakeStore) CreateSessionWithDependencies(ctx context.Context, rec domain.SessionRecord, deps []domain.SessionDependency) (domain.SessionRecord, error) {
+	seen := make(map[domain.SessionID]bool, len(deps))
+	for _, dep := range deps {
+		if seen[dep.DependsOnSessionID] {
+			return domain.SessionRecord{}, fmt.Errorf("duplicate dependency %s", dep.DependsOnSessionID)
+		}
+		seen[dep.DependsOnSessionID] = true
+	}
+	created, err := f.CreateSession(ctx, rec)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	f.dependenciesMu.Lock()
+	defer f.dependenciesMu.Unlock()
+	for _, dep := range deps {
+		dep.SessionID = created.ID
+		f.dependencies[created.ID] = append(f.dependencies[created.ID], dep)
+	}
+	return created, nil
 }
 func (f *fakeStore) CreateAutomationSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error) {
 	for _, existing := range f.sessions {
@@ -1817,6 +1859,97 @@ func TestSpawn_IgnoresNonOrchestratorParent(t *testing.T) {
 	}
 }
 
+func TestSpawnParentPersistsSameProjectOrchestrator(t *testing.T) {
+	m, st, _, _ := newManager()
+	st.sessions["mer-0"] = domain.SessionRecord{ID: "mer-0", ProjectID: "mer", Kind: domain.KindOrchestrator}
+
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: "mer-0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.ParentSessionID; got != "mer-0" {
+		t.Fatalf("returned parent = %q, want mer-0", got)
+	}
+	if got := st.sessions[rec.ID].ParentSessionID; got != "mer-0" {
+		t.Fatalf("persisted parent = %q, want mer-0", got)
+	}
+}
+
+func TestSpawnParentPersistsWorkerParentWithoutPermissionInheritance(t *testing.T) {
+	m, st, rt, _ := newManager()
+	st.sessions["mer-0"] = domain.SessionRecord{ID: "mer-0", ProjectID: "mer", Kind: domain.KindWorker}
+	st.conversations["mer-0"] = domain.ConversationRecord{
+		SessionID: "mer-0", Settings: domain.ConversationSettings{ApprovalMode: domain.PermissionModeBypassPermissions},
+	}
+
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: "mer-0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.sessions[rec.ID].ParentSessionID; got != "mer-0" {
+		t.Fatalf("persisted parent = %q, want mer-0", got)
+	}
+	if got := rt.lastCfg.Env[EnvPermissionMode]; got != string(domain.PermissionModeAuto) {
+		t.Fatalf("worker permission environment = %q, want project default %q", got, domain.PermissionModeAuto)
+	}
+}
+
+func TestSpawnParentIgnoresUnusableParents(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		seed   *domain.SessionRecord
+		parent domain.SessionID
+	}{
+		{name: "missing parent", parent: "mer-missing"},
+		{
+			name:   "cross-project parent",
+			seed:   &domain.SessionRecord{ID: "other-0", ProjectID: "other", Kind: domain.KindOrchestrator},
+			parent: "other-0",
+		},
+		{
+			name:   "hidden task preparation parent",
+			seed:   &domain.SessionRecord{ID: "mer-prep", ProjectID: "mer", IsTaskPreparation: true},
+			parent: "mer-prep",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _, _ := newManager()
+			if tc.seed != nil {
+				st.sessions[tc.seed.ID] = *tc.seed
+			}
+
+			rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+				ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: tc.parent,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := st.sessions[rec.ID].ParentSessionID; got != "" {
+				t.Fatalf("persisted parent = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestSpawnParentStorageFailureFailsSpawn(t *testing.T) {
+	m, st, _, _ := newManager()
+	st.getSessionErr = errors.New("readback unavailable")
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: "mer-0",
+	})
+	if err == nil || !errors.Is(err, st.getSessionErr) || !strings.Contains(err.Error(), "spawn") {
+		t.Fatalf("Spawn error = %v, want wrapped storage failure", err)
+	}
+	if len(st.sessions) != 0 {
+		t.Fatalf("sessions = %d, want none created after parent load failure", len(st.sessions))
+	}
+}
+
 type rejectingHarnessUseGate struct {
 	harness domain.AgentHarness
 }
@@ -2746,6 +2879,30 @@ func TestSpawnPreparedClientRequestRetriesAfterStorageFullWithoutDuplicateWorker
 	}
 	if err := m.CancelTaskPreparation(ctx, token); err != nil || len(st.sessions) != 1 {
 		t.Fatalf("recovered cleanup: sessions=%d err=%v", len(st.sessions), err)
+	}
+}
+
+func TestSpawnPreparedSessionKeepsResolvedParent(t *testing.T) {
+	m, st, _, _ := newManager()
+	m.runBackground = func(work func()) { work() }
+	st.sessions["mer-0"] = domain.SessionRecord{ID: "mer-0", ProjectID: "mer", Kind: domain.KindOrchestrator}
+	token, err := m.PrepareTaskWorkspace(ctx, st.projects["mer"])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		Prompt: "go", TaskPreparation: token, ParentSessionID: "mer-0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.ParentSessionID; got != "mer-0" {
+		t.Fatalf("returned parent = %q, want mer-0", got)
+	}
+	if got := st.sessions[rec.ID].ParentSessionID; got != "mer-0" {
+		t.Fatalf("persisted parent = %q, want mer-0", got)
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	created, _, err := s.createSessionLocked(ctx, rec)
+	created, _, err := s.createSessionWith(ctx, s.qw, rec)
 	return created, err
 }
 
@@ -32,7 +32,7 @@ func (s *Store) CreateClientRequestSession(ctx context.Context, rec domain.Sessi
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.createSessionLocked(ctx, rec)
+	return s.createSessionWith(ctx, s.qw, rec)
 }
 
 // GetSessionByClientRequestID finds the session created for a retryable request.
@@ -82,10 +82,13 @@ func (s *Store) CreateAutomationSession(ctx context.Context, rec domain.SessionR
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.createSessionLocked(ctx, rec)
+	return s.createSessionWith(ctx, s.qw, rec)
 }
 
-func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error) {
+// createSessionWith inserts rec through q. The caller holds writeMu; a caller
+// inside a transaction passes that transaction's queries so the row and its
+// dependency edges commit together.
+func (s *Store) createSessionWith(ctx context.Context, q *gen.Queries, rec domain.SessionRecord) (domain.SessionRecord, bool, error) {
 	if rec.ClientRequestID != "" {
 		existing, found, err := s.getSessionByClientRequestID(ctx, s.qw, rec.ClientRequestID)
 		if err != nil || found {
@@ -93,7 +96,7 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 		}
 	}
 	if rec.AutomationRunID != nil {
-		existing, err := s.qw.GetSessionByAutomationRunID(ctx, rec.AutomationRunID)
+		existing, err := q.GetSessionByAutomationRunID(ctx, rec.AutomationRunID)
 		if err == nil {
 			return rowToRecord(gen.GetSessionRow(existing)), false, nil
 		}
@@ -106,17 +109,17 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 	var err error
 	prefix := string(rec.ProjectID)
 	if rec.ProjectID == "" {
-		num, err = s.qw.NextStandaloneSessionNum(ctx)
+		num, err = q.NextStandaloneSessionNum(ctx)
 		prefix = "standalone"
 	} else {
-		num, err = s.qw.NextSessionNum(ctx, optionalProjectID(rec.ProjectID))
+		num, err = q.NextSessionNum(ctx, optionalProjectID(rec.ProjectID))
 	}
 	if err != nil {
 		return domain.SessionRecord{}, false, fmt.Errorf("next session num for %s: %w", rec.ProjectID, err)
 	}
 	for {
 		rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, num))
-		exists, err := s.qw.SessionIDExists(ctx, rec.ID)
+		exists, err := q.SessionIDExists(ctx, rec.ID)
 		if err != nil {
 			return domain.SessionRecord{}, false, fmt.Errorf("check session id %s: %w", rec.ID, err)
 		}
@@ -125,7 +128,7 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 		}
 		num++
 	}
-	if err := s.qw.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
+	if err := q.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
 		if rec.ClientRequestID != "" {
 			existing, found, reloadErr := s.getSessionByClientRequestID(ctx, s.qw, rec.ClientRequestID)
 			if reloadErr == nil && found {
@@ -133,7 +136,7 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 			}
 		}
 		if rec.AutomationRunID != nil {
-			existing, reloadErr := s.qw.GetSessionByAutomationRunID(ctx, rec.AutomationRunID)
+			existing, reloadErr := q.GetSessionByAutomationRunID(ctx, rec.AutomationRunID)
 			if reloadErr == nil {
 				return rowToRecord(gen.GetSessionRow(existing)), false, nil
 			}
@@ -300,6 +303,7 @@ func (s *Store) PromoteTaskPreparation(ctx context.Context, id domain.SessionID,
 	activity := normalActivity(rec.Activity, rec.UpdatedAt)
 	rows, err := s.qw.PromoteTaskPreparation(ctx, gen.PromoteTaskPreparationParams{
 		IssueID:            rec.IssueID,
+		ParentSessionID:    optionalParentSessionID(rec.ParentSessionID),
 		Kind:               rec.Kind,
 		Harness:            rec.Harness,
 		AutoReviewEnabled:  rec.AutoReviewEnabled,
@@ -964,6 +968,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		AutomationRunID:           row.AutomationRunID,
 		AutomationLaunchCompleted: row.AutomationLaunchCompleted,
 		IssueID:                   row.IssueID,
+		ParentSessionID:           parentSessionIDValue(row.ParentSessionID),
 		Kind:                      row.Kind,
 		Harness:                   row.Harness,
 		ReviewerHarness:           row.ReviewerHarness,
@@ -1029,6 +1034,12 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		ProvisionState:    row.ProvisionState.WithDefault(),
 		ProvisionError:    row.ProvisionError,
 		ProvisionSteps:    decodeProvisionSteps(row.ProvisionSteps),
+		SchedulingState:   row.SchedulingState.WithDefault(),
+		BlockedReason:     row.BlockedReason,
+		CompletedAt:       nullTimeToTimePtr(row.CompletedAt),
+		AdmittedAt:        nullTimeToTimePtr(row.AdmittedAt),
+		AdmissionOverride: row.AdmissionOverride,
+		QueuedSpawnConfig: row.QueuedSpawnConfig,
 		BranchState:       decodeBranchState(row.BranchState),
 		BranchNaming:      row.BranchNaming,
 		TemporaryBranch:   row.TemporaryBranch,
@@ -1102,6 +1113,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProjectID:                        optionalProjectID(rec.ProjectID),
 		Num:                              num,
 		IssueID:                          rec.IssueID,
+		ParentSessionID:                  optionalParentSessionID(rec.ParentSessionID),
 		Kind:                             rec.Kind,
 		Harness:                          rec.Harness,
 		ReviewerHarness:                  rec.ReviewerHarness,
@@ -1157,6 +1169,12 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProvisionState:                   rec.ProvisionState.WithDefault(),
 		ProvisionError:                   rec.ProvisionError,
 		IsTaskPreparation:                rec.IsTaskPreparation,
+		SchedulingState:                  rec.SchedulingState.WithDefault(),
+		BlockedReason:                    rec.BlockedReason,
+		CompletedAt:                      timePtrToNullTime(rec.CompletedAt),
+		AdmittedAt:                       timePtrToNullTime(rec.AdmittedAt),
+		AdmissionOverride:                rec.AdmissionOverride,
+		QueuedSpawnConfig:                rec.QueuedSpawnConfig,
 		AutomationRunID:                  rec.AutomationRunID,
 		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
 		ClientRequestID:                  rec.ClientRequestID,

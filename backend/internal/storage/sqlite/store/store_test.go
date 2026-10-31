@@ -465,6 +465,212 @@ func TestSessionPersistsDiffBaseMetadata(t *testing.T) {
 	}
 }
 
+func TestSessionPersistsParentSessionIDAcrossReads(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "parent-link")
+	parent, err := s.CreateSession(ctx, sampleRecord("parent-link"))
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	childRec := sampleRecord("parent-link")
+	childRec.ParentSessionID = parent.ID
+	child, err := s.CreateSession(ctx, childRec)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	got, ok, err := s.GetSession(ctx, child.ID)
+	if err != nil || !ok {
+		t.Fatalf("get child: ok=%v err=%v", ok, err)
+	}
+	if got.ParentSessionID != parent.ID {
+		t.Fatalf("GetSession parent = %q, want %q", got.ParentSessionID, parent.ID)
+	}
+
+	list, err := s.ListSessions(ctx, "parent-link")
+	if err != nil {
+		t.Fatalf("list project sessions: %v", err)
+	}
+	if found := sessionRecordByID(list, child.ID); found == nil || found.ParentSessionID != parent.ID {
+		t.Fatalf("ListSessions parent = %+v, want %q", found, parent.ID)
+	}
+
+	all, err := s.ListAllSessions(ctx)
+	if err != nil {
+		t.Fatalf("list all sessions: %v", err)
+	}
+	if found := sessionRecordByID(all, child.ID); found == nil || found.ParentSessionID != parent.ID {
+		t.Fatalf("ListAllSessions parent = %+v, want %q", found, parent.ID)
+	}
+}
+
+func TestSessionWithoutParentReadsAsRoot(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "root-session")
+	root, err := s.CreateSession(ctx, sampleRecord("root-session"))
+	if err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+
+	got, ok, err := s.GetSession(ctx, root.ID)
+	if err != nil || !ok {
+		t.Fatalf("get root: ok=%v err=%v", ok, err)
+	}
+	if got.ParentSessionID != "" {
+		t.Fatalf("GetSession parent = %q, want empty", got.ParentSessionID)
+	}
+	list, err := s.ListSessions(ctx, "root-session")
+	if err != nil {
+		t.Fatalf("list project sessions: %v", err)
+	}
+	if found := sessionRecordByID(list, root.ID); found == nil || found.ParentSessionID != "" {
+		t.Fatalf("ListSessions parent = %+v, want empty", found)
+	}
+	all, err := s.ListAllSessions(ctx)
+	if err != nil {
+		t.Fatalf("list all sessions: %v", err)
+	}
+	if found := sessionRecordByID(all, root.ID); found == nil || found.ParentSessionID != "" {
+		t.Fatalf("ListAllSessions parent = %+v, want empty", found)
+	}
+}
+
+// The raw column records whatever the caller supplied. Project equality is the
+// session manager's concern, not the store's.
+func TestSessionStoresCrossProjectParentAsProvided(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "alpha")
+	seedProject(t, s, "beta")
+	parent, err := s.CreateSession(ctx, sampleRecord("alpha"))
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	childRec := sampleRecord("beta")
+	childRec.ParentSessionID = parent.ID
+	child, err := s.CreateSession(ctx, childRec)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	got, ok, err := s.GetSession(ctx, child.ID)
+	if err != nil || !ok {
+		t.Fatalf("get child: ok=%v err=%v", ok, err)
+	}
+	if got.ParentSessionID != parent.ID {
+		t.Fatalf("stored parent = %q, want cross-project %q", got.ParentSessionID, parent.ID)
+	}
+}
+
+func TestUpdateSessionCannotChangeParentSessionID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "immutable-parent")
+	parent, err := s.CreateSession(ctx, sampleRecord("immutable-parent"))
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	childRec := sampleRecord("immutable-parent")
+	childRec.ParentSessionID = parent.ID
+	child, err := s.CreateSession(ctx, childRec)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	loaded, ok, err := s.GetSession(ctx, child.ID)
+	if err != nil || !ok {
+		t.Fatalf("get child: ok=%v err=%v", ok, err)
+	}
+	loaded.ParentSessionID = "tampered"
+	if err := s.UpdateSession(ctx, loaded); err != nil {
+		t.Fatalf("update child: %v", err)
+	}
+	reloaded, ok, err := s.GetSession(ctx, child.ID)
+	if err != nil || !ok {
+		t.Fatalf("reload child: ok=%v err=%v", ok, err)
+	}
+	if reloaded.ParentSessionID != parent.ID {
+		t.Fatalf("parent after update = %q, want original %q", reloaded.ParentSessionID, parent.ID)
+	}
+}
+
+func TestDeletingParentNullsChildParentSessionID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "orphan-child")
+	now := time.Now().UTC().Truncate(time.Second)
+	parent, err := s.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: "orphan-child",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	childRec := sampleRecord("orphan-child")
+	childRec.ParentSessionID = parent.ID
+	child, err := s.CreateSession(ctx, childRec)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	deleted, err := s.DeleteSession(ctx, parent.ID)
+	if err != nil || !deleted {
+		t.Fatalf("delete parent = %v, %v", deleted, err)
+	}
+	got, ok, err := s.GetSession(ctx, child.ID)
+	if err != nil || !ok {
+		t.Fatalf("get child: ok=%v err=%v", ok, err)
+	}
+	if got.ParentSessionID != "" {
+		t.Fatalf("child parent after deleting parent = %q, want empty", got.ParentSessionID)
+	}
+}
+
+func TestPromoteTaskPreparationPersistsParentSessionID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "promoted-parent")
+	parent, err := s.CreateSession(ctx, sampleRecord("promoted-parent"))
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	prepRec := sampleRecord("promoted-parent")
+	prepRec.IsTaskPreparation = true
+	prepRec.ProvisionState = domain.SessionProvisionProvisioning
+	prep, err := s.CreateSession(ctx, prepRec)
+	if err != nil {
+		t.Fatalf("create preparation: %v", err)
+	}
+	promoted := sampleRecord("promoted-parent")
+	promoted.ParentSessionID = parent.ID
+	updated, err := s.PromoteTaskPreparation(ctx, prep.ID, promoted)
+	if err != nil || !updated {
+		t.Fatalf("promote preparation = %v, %v", updated, err)
+	}
+	got, ok, err := s.GetSession(ctx, prep.ID)
+	if err != nil || !ok {
+		t.Fatalf("get promoted session: ok=%v err=%v", ok, err)
+	}
+	if got.ParentSessionID != parent.ID {
+		t.Fatalf("promoted parent = %q, want %q", got.ParentSessionID, parent.ID)
+	}
+}
+
+func sessionRecordByID(records []domain.SessionRecord, id domain.SessionID) *domain.SessionRecord {
+	for i := range records {
+		if records[i].ID == id {
+			return &records[i]
+		}
+	}
+	return nil
+}
+
 func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -2367,6 +2573,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 		}
 		row.Mode = domain.NormalizeSessionMode(row.Mode)
 		row.ProvisionState = domain.SessionProvisionReady
+		row.SchedulingState = domain.SchedulingImmediate
 		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		row.OutputType = domain.SessionOutputNone
 		row.Metadata.Permissions = tc.want

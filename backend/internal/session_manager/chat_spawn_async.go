@@ -567,6 +567,12 @@ func (m *Manager) failInterruptedProvisioningRecords(ctx context.Context, recs [
 		if rec.IsTerminated || rec.IsTaskPreparation || !rec.ProvisionState.IsProvisioning() {
 			continue
 		}
+		if rec.SchedulingState.WithDefault() != domain.SchedulingImmediate {
+			// Dependency scheduling owns these rows. A queued or blocked
+			// reservation has not started yet, and an admitted row is recovered
+			// by the scheduler; neither is an interrupted background start.
+			continue
+		}
 		if _, err := m.setProvisionState(ctx, rec.ID, domain.SessionProvisionFailed,
 			"AO restarted before this session finished starting"); err != nil {
 			failures = append(failures, fmt.Errorf("session %s: %w", rec.ID, err))

@@ -9,7 +9,7 @@ SELECT COUNT(*) > 0 FROM sessions WHERE id = ?;
 
 -- name: InsertSession :exec
 INSERT INTO sessions (
-    id, project_id, num, issue_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
+    id, project_id, num, issue_id, parent_session_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
     runtime_launch_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
@@ -23,15 +23,16 @@ INSERT INTO sessions (
     requested_output,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
     provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
-    client_request_id, client_request_hash
+    client_request_id, client_request_hash,
+    scheduling_state, blocked_reason, completed_at, admitted_at, admission_override, queued_spawn_config
 ) VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?
 );
 
 -- name: GetClientRequestSession :one
@@ -276,7 +277,7 @@ SET session_mode = sqlc.arg(target_mode),
 WHERE id = sqlc.arg(id) AND session_mode = sqlc.arg(source_mode) AND is_terminated = 0;
 
 -- name: GetSession :one
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
@@ -294,11 +295,12 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id,
+    scheduling_state, blocked_reason, completed_at, admitted_at, admission_override, queued_spawn_config
 FROM sessions WHERE id = ?;
 
 -- name: GetSessionByAutomationRunID :one
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
@@ -316,11 +318,12 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id,
+    scheduling_state, blocked_reason, completed_at, admitted_at, admission_override, queued_spawn_config
 FROM sessions WHERE automation_run_id = ?;
 
 -- name: ListSessionsByProject :many
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
@@ -338,11 +341,12 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id,
+    scheduling_state, blocked_reason, completed_at, admitted_at, admission_override, queued_spawn_config
 FROM sessions WHERE project_id IS ? ORDER BY num;
 
 -- name: ListAllSessions :many
-SELECT id, project_id, num, issue_id, kind, harness,
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
@@ -360,7 +364,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id,
+    scheduling_state, blocked_reason, completed_at, admitted_at, admission_override, queued_spawn_config
 FROM sessions ORDER BY project_id, num;
 
 -- name: ListChatHibernationCandidates :many
@@ -388,6 +393,7 @@ ORDER BY id;
 -- published concurrently by speculative worktree creation.
 UPDATE sessions SET
     issue_id = sqlc.arg(issue_id),
+    parent_session_id = sqlc.arg(parent_session_id),
     kind = sqlc.arg(kind),
     harness = sqlc.arg(harness),
     auto_review_enabled = sqlc.arg(auto_review_enabled),

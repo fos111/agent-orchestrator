@@ -741,6 +741,13 @@ type Session struct {
 	LaunchOptions                    string
 	BranchNaming                     bool
 	TemporaryBranch                  string
+	ParentSessionID                  *domain.SessionID
+	SchedulingState                  domain.SchedulingState
+	BlockedReason                    string
+	CompletedAt                      sql.NullTime
+	AdmittedAt                       sql.NullTime
+	AdmissionOverride                bool
+	QueuedSpawnConfig                string
 }
 
 type SessionAgentAccount struct {
@@ -773,6 +780,13 @@ type SessionCleanupFact struct {
 	LastAttemptAt        sql.NullTime
 	NextAttemptAt        sql.NullTime
 	FailureCode          string
+}
+
+type SessionDependency struct {
+	SessionID          domain.SessionID
+	DependsOnSessionID domain.SessionID
+	RequiredState      domain.DependencyRequiredState
+	CreatedAt          time.Time
 }
 
 type SessionHarnessRelease struct {

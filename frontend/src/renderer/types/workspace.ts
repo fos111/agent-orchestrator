@@ -126,6 +126,8 @@ export type WorkspaceSession = {
 	/** Whether the daemon may automatically review this session after it becomes idle. */
 	autoReviewEnabled?: boolean;
 	kind?: SessionKind;
+	/** The same-project AO session that requested this spawn through `ao spawn`. */
+	parentSessionId?: string;
 	/**
 	 * Which controller is currently committed for this session. The session
 	 * surface renders from THIS value, never from the current creation default.
@@ -162,8 +164,12 @@ export type WorkspaceSession = {
 	 * that fails leaves the session in place ("failed") with
 	 * {@link provisionError} explaining why. Absent means ready — which is also
 	 * what every session created before asynchronous spawn reads as.
+	 *
+	 * "queued" is the pre-launch scheduling state: the daemon holds the
+	 * session without a workspace until its dependencies and project limits
+	 * allow it to start, so it is not yet provisioning.
 	 */
-	provisionState?: "provisioning" | "ready" | "failed";
+	provisionState?: "queued" | "provisioning" | "ready" | "failed";
 	/** Why a failed start stopped, in the daemon's words. */
 	provisionError?: string;
 	/**

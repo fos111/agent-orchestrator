@@ -95,6 +95,8 @@ type SessionService interface {
 	ExitAgent(ctx context.Context, id domain.SessionID) (sessionsvc.ExitAgentOutcome, error)
 	ResumeAgent(ctx context.Context, id domain.SessionID) (sessionsvc.ResumeAgentOutcome, error)
 	RequestKill(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error)
+	Admit(ctx context.Context, id domain.SessionID, force bool) (domain.Session, error)
+	Complete(ctx context.Context, id domain.SessionID) (domain.Session, error)
 	DeleteArtifacts(ctx context.Context, id domain.SessionID) error
 	RollbackSpawn(ctx context.Context, id domain.SessionID) (sessionsvc.RollbackOutcome, error)
 	Cleanup(ctx context.Context, project domain.ProjectID) (sessionsvc.CleanupOutcome, error)
@@ -267,6 +269,8 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/interface-transition", c.startInterfaceTransition)
 	r.Delete("/sessions/{sessionId}/interface-transition", c.cancelInterfaceTransition)
 	r.Put("/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement", c.acknowledgeInterfaceTransitionNotice)
+	r.Post("/sessions/{sessionId}/admit", c.admit)
+	r.Post("/sessions/{sessionId}/complete", c.complete)
 	r.Post("/sessions/{sessionId}/kill", c.kill)
 	r.Post("/sessions/{sessionId}/rollback", c.rollback)
 	r.Post("/sessions/{sessionId}/send", c.send)
@@ -371,6 +375,11 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 	if in.Kind == "" {
 		in.Kind = domain.KindWorker
 	}
+	dependencies, depErr := spawnDependencySpecs(in)
+	if depErr != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", depErr.code, depErr.message, nil)
+		return
+	}
 	attachments, attachErr := decodeSpawnAttachments(in.Attachments)
 	if attachErr != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", attachErr.code, attachErr.message, nil)
@@ -383,7 +392,7 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 		keyless.Attachments = nil
 		requestHash = clientRequestFingerprint("session", keyless, attachments)
 	}
-	sess, promptBytes, systemPromptBytes, err := c.Svc.Spawn(r.Context(), ports.SpawnConfig{ProjectID: in.ProjectID, IssueID: in.IssueID, ParentSessionID: in.ParentSessionID, TrackerProvider: in.TrackerProvider, Kind: in.Kind, Harness: in.Harness, Branch: in.Branch, RequestedMode: in.Mode, Prompt: in.Prompt, RequestedOutput: in.RequestedOutput, DisplayName: displayName, Attachments: attachments, AgentConfig: ports.AgentConfig{Model: in.Model, Effort: in.Effort, Permissions: in.ApprovalMode}, EffortOverride: strings.TrimSpace(in.Effort) != "", ClientRequestID: in.ClientRequestID, ClientRequestHash: requestHash})
+	sess, promptBytes, systemPromptBytes, err := c.Svc.Spawn(r.Context(), ports.SpawnConfig{ProjectID: in.ProjectID, IssueID: in.IssueID, ParentSessionID: in.ParentSessionID, TrackerProvider: in.TrackerProvider, Kind: in.Kind, Harness: in.Harness, Branch: in.Branch, RequestedMode: in.Mode, Prompt: in.Prompt, RequestedOutput: in.RequestedOutput, DisplayName: displayName, Attachments: attachments, Dependencies: dependencies, AgentConfig: ports.AgentConfig{Model: in.Model, Effort: in.Effort, Permissions: in.ApprovalMode}, EffortOverride: strings.TrimSpace(in.Effort) != "", ClientRequestID: in.ClientRequestID, ClientRequestHash: requestHash})
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -2142,6 +2151,95 @@ func (c *SessionsController) kill(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	envelope.WriteJSON(w, http.StatusOK, KillSessionResponse{OK: true, SessionID: sessionID(r), Freed: result.Freed, CleanupPending: result.CleanupPending, ArtifactsDeleted: artifactsDeleted})
+}
+
+// admit asks the dependency scheduler to admit one queued or blocked session
+// now. A non-forced admit re-evaluates dependencies and limits; force bypasses
+// both and records the override.
+func (c *SessionsController) admit(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/admit")
+		return
+	}
+	var in AdmitSessionRequest
+	if err := decodeJSON(r, &in); err != nil && !errors.Is(err, io.EOF) {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	sess, err := c.Svc.Admit(r.Context(), sessionID(r), in.Force)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, SessionResponse{Session: sessionView(r, sess)})
+}
+
+// complete records the explicit completion fact a non-PR task needs. It is
+// idempotent, so a retry returns the same completed session.
+func (c *SessionsController) complete(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/complete")
+		return
+	}
+	sess, err := c.Svc.Complete(r.Context(), sessionID(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, SessionResponse{Session: sessionView(r, sess)})
+}
+
+// spawnDependencySpecs maps the two accepted dependency request forms onto the
+// service's normalized specs. Form conflicts are request-shape errors, so they
+// are rejected here before any durable state is created.
+func spawnDependencySpecs(in SpawnSessionRequest) ([]domain.SessionDependencySpec, *attachmentError) {
+	structured := len(in.DependsOn) > 0
+	flat := len(in.DependsOnSessionIds) > 0
+	if structured && flat {
+		return nil, &attachmentError{
+			code:    "DEPENDENCY_FORM_CONFLICT",
+			message: "Send dependsOn or dependsOnSessionIds, not both",
+		}
+	}
+	if structured && in.RequiredDependencyState != "" {
+		return nil, &attachmentError{
+			code:    "DEPENDENCY_FORM_CONFLICT",
+			message: "requiredDependencyState applies to dependsOnSessionIds; set requiredState on each dependsOn entry",
+		}
+	}
+	if in.RequiredDependencyState != "" && !in.RequiredDependencyState.Valid() {
+		return nil, &attachmentError{
+			code:    "DEPENDENCY_STATE_INVALID",
+			message: "requiredDependencyState must be ready, merged, or completed",
+		}
+	}
+	if !structured && !flat {
+		return nil, nil
+	}
+	if structured {
+		specs := make([]domain.SessionDependencySpec, 0, len(in.DependsOn))
+		for _, dep := range in.DependsOn {
+			if dep.RequiredState != "" && !dep.RequiredState.Valid() {
+				return nil, &attachmentError{
+					code:    "DEPENDENCY_STATE_INVALID",
+					message: "requiredState must be ready, merged, or completed",
+				}
+			}
+			specs = append(specs, domain.SessionDependencySpec{
+				SessionID:     dep.SessionID,
+				RequiredState: dep.RequiredState,
+			})
+		}
+		return specs, nil
+	}
+	specs := make([]domain.SessionDependencySpec, 0, len(in.DependsOnSessionIds))
+	for _, id := range in.DependsOnSessionIds {
+		specs = append(specs, domain.SessionDependencySpec{
+			SessionID:     id,
+			RequiredState: in.RequiredDependencyState,
+		})
+	}
+	return specs, nil
 }
 
 // rollback undoes a partially-completed spawn: if the session row is still in
