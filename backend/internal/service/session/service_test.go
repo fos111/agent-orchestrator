@@ -88,6 +88,7 @@ type fakeStore struct {
 	getCleanupFactsCalls  int
 	listCleanupFactsCalls int
 	cleanupFactsRequested []domain.SessionID
+	dependencies          map[domain.SessionID][]domain.SessionDependency
 }
 
 func newFakeStore() *fakeStore {
@@ -104,6 +105,7 @@ func newFakeStore() *fakeStore {
 		threads:        map[string][]domain.PullRequestReviewThread{},
 		comments:       map[string][]domain.PullRequestComment{},
 		reviewRuns:     map[domain.SessionID][]domain.CurrentHeadReviewRun{},
+		dependencies:   map[domain.SessionID][]domain.SessionDependency{},
 	}
 }
 
@@ -366,6 +368,12 @@ func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.S
 	}
 	r, ok := f.sessions[id]
 	return r, ok, nil
+}
+
+// ListSessionDependencies serves the create-time cycle check. Edges recorded on
+// either side let a test build a cyclic graph the daemon could only inherit.
+func (f *fakeStore) ListSessionDependencies(_ context.Context, id domain.SessionID) ([]domain.SessionDependency, error) {
+	return append([]domain.SessionDependency(nil), f.dependencies[id]...), nil
 }
 
 func (f *fakeStore) GetSessionByClientRequestID(_ context.Context, id string) (domain.SessionRecord, bool, error) {
@@ -2640,6 +2648,7 @@ type fakeCommander struct {
 	requestKillResult *sessionmanager.KillResult
 	spawnFunc         func(ports.SpawnConfig) domain.SessionRecord
 	spawnCalls        int
+	reserveCalls      int
 	spawned           bool
 	spawnedCfg        ports.SpawnConfig
 	spawnCtx          context.Context
@@ -2686,6 +2695,12 @@ func (f *fakeCommander) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domai
 	}
 	return domain.SessionRecord{ID: "mer-9", ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness}, len(cfg.Prompt), 0, nil
 }
+func (f *fakeCommander) ReserveSpawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error) {
+	f.reserveCalls++
+	rec, _, _, err := f.Spawn(ctx, cfg)
+	return rec, err
+}
+
 func (*fakeCommander) PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error) {
 	return "", nil
 }

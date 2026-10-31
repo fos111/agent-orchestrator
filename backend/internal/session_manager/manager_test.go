@@ -49,6 +49,8 @@ type fakeStore struct {
 	cleanupMu                          sync.Mutex
 	cleanupFacts                       map[domain.SessionID]domain.SessionCleanupRecord
 	sessions                           map[domain.SessionID]domain.SessionRecord
+	dependenciesMu                     sync.Mutex
+	dependencies                       map[domain.SessionID][]domain.SessionDependency
 	pr                                 map[domain.SessionID]domain.PRFacts
 	projects                           map[string]domain.ProjectRecord
 	conversations                      map[domain.SessionID]domain.ConversationRecord
@@ -76,6 +78,7 @@ type fakeStore struct {
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		sessions:      map[domain.SessionID]domain.SessionRecord{},
+		dependencies:  map[domain.SessionID][]domain.SessionDependency{},
 		pr:            map[domain.SessionID]domain.PRFacts{},
 		projects:      map[string]domain.ProjectRecord{},
 		conversations: map[domain.SessionID]domain.ConversationRecord{},
@@ -102,6 +105,29 @@ func (f *fakeStore) CreateSession(_ context.Context, rec domain.SessionRecord) (
 	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, f.num))
 	f.sessions[rec.ID] = rec
 	return rec, nil
+}
+
+// CreateSessionWithDependencies mirrors the atomic store write: the row and its
+// edges land together, and a duplicate edge fails the whole create.
+func (f *fakeStore) CreateSessionWithDependencies(ctx context.Context, rec domain.SessionRecord, deps []domain.SessionDependency) (domain.SessionRecord, error) {
+	seen := make(map[domain.SessionID]bool, len(deps))
+	for _, dep := range deps {
+		if seen[dep.DependsOnSessionID] {
+			return domain.SessionRecord{}, fmt.Errorf("duplicate dependency %s", dep.DependsOnSessionID)
+		}
+		seen[dep.DependsOnSessionID] = true
+	}
+	created, err := f.CreateSession(ctx, rec)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	f.dependenciesMu.Lock()
+	defer f.dependenciesMu.Unlock()
+	for _, dep := range deps {
+		dep.SessionID = created.ID
+		f.dependencies[created.ID] = append(f.dependencies[created.ID], dep)
+	}
+	return created, nil
 }
 func (f *fakeStore) CreateAutomationSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error) {
 	for _, existing := range f.sessions {

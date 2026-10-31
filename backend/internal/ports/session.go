@@ -90,6 +90,16 @@ type SpawnConfig struct {
 	// the desktop's New Task dialog is open. It is a hint: an absent or expired
 	// token falls back to ordinary workspace creation.
 	TaskPreparation domain.TaskPreparationToken
+
+	// Dependencies asks for a queued spawn: the row is created without a
+	// workspace, and the scheduler launches it once every edge is satisfied.
+	// TaskPreparation is ignored and attachments are rejected on this path.
+	Dependencies []domain.SessionDependencySpec
+	// ResumeSessionID launches an existing reserved row instead of creating one.
+	// The scheduler sets it from the row's queued_spawn_config; callers never
+	// set it. Spawn validates the environment again, because a queued row may
+	// have waited for a dependency for a long time.
+	ResumeSessionID domain.SessionID
 }
 
 // SpawnAttachment is a single file attached to a spawn request. Data holds the

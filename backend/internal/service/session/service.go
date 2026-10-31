@@ -81,6 +81,9 @@ type ListFilter struct {
 // *sessionmanager.Manager in production, a fake in tests.
 type commander interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error)
+	// ReserveSpawn persists a queued session without a workspace; the scheduler
+	// launches it later through LaunchSpawn.
+	ReserveSpawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error)
 	RunBackgroundTask(ctx context.Context, id domain.SessionID, systemPrompt, prompt string) (string, error)
 	RestoreWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
 	ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
@@ -340,6 +343,16 @@ func (s *Service) SetUsageArchiveFlush(flush func(context.Context)) {
 // Spawn creates a session and returns the API-facing read model plus
 // ephemeral prompt size measurements.
 func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
+	if len(cfg.Dependencies) > 0 {
+		if cfg.ProjectID == "" {
+			return domain.Session{}, 0, 0, apierr.Invalid("DEPENDENCY_STANDALONE_UNSUPPORTED",
+				"Dependencies require a registered project; a standalone session cannot depend on another session", nil)
+		}
+		if cfg.Kind != "" && cfg.Kind != domain.KindWorker {
+			return domain.Session{}, 0, 0, apierr.Invalid("DEPENDENCY_STANDALONE_UNSUPPORTED",
+				"Orchestrator sessions cannot depend on another session", nil)
+		}
+	}
 	if rec, found, err := s.replayClientRequest(ctx, cfg.ClientRequestID, cfg.ClientRequestHash); err != nil {
 		return domain.Session{}, 0, 0, err
 	} else if found {
@@ -412,6 +425,11 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 	cfg = s.withIssueContext(ctx, cfg, project)
+	dependencies, err := s.resolveSpawnDependencies(ctx, cfg, project)
+	if err != nil {
+		return domain.Session{}, 0, 0, err
+	}
+	cfg.Dependencies = dependencies
 	rec, promptBytes, systemPromptBytes, err := s.spawnWithTelemetry(ctx, cfg, project)
 	if err != nil {
 		s.invalidateAgentReadinessAfterLaunchFailure(cfg.Harness, err)
@@ -442,7 +460,16 @@ func (s *Service) spawnWithTelemetry(ctx context.Context, cfg ports.SpawnConfig,
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("count sessions: %w", err)
 	}
-	rec, promptBytes, systemPromptBytes, err := s.manager.Spawn(ctx, cfg)
+	var rec domain.SessionRecord
+	var promptBytes, systemPromptBytes int
+	if len(cfg.Dependencies) > 0 {
+		// A dependency spawn reserves the row and stops; the scheduler owns the
+		// workspace and controller. It builds no prompt now, so both
+		// measurements stay zero.
+		rec, err = s.manager.ReserveSpawn(ctx, cfg)
+	} else {
+		rec, promptBytes, systemPromptBytes, err = s.manager.Spawn(ctx, cfg)
+	}
 	if err != nil {
 		s.emitSpawnFailed(ctx, cfg, err, s.now().Sub(start).Milliseconds())
 		return domain.SessionRecord{}, 0, 0, err

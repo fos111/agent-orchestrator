@@ -86,6 +86,39 @@ type ProjectConfig struct {
 	// the feature but check with the user or orchestrator before using it.
 	// Read at spawn, when the worker prompt is built.
 	WorkersRequestReview bool `json:"workersRequestReview,omitempty"`
+
+	// Scheduling bounds dependent-session admission. The zero value preserves
+	// pre-dependency behavior: no active-session limit and the built-in edge cap.
+	Scheduling SchedulingConfig `json:"scheduling,omitempty"`
+}
+
+// SchedulingConfig is the project's dependency-queue policy (spec 5.6).
+// Zero always means "the built-in default", so an existing project config needs
+// no migration.
+type SchedulingConfig struct {
+	// MaxActiveSessions caps active sessions in the project. 0 is unlimited.
+	MaxActiveSessions int `json:"maxActiveSessions,omitempty"`
+	// MaxActivePerTeam caps active workers in one orchestrator subtree. 0 is
+	// unlimited; Phase 4 enforces it.
+	MaxActivePerTeam int `json:"maxActivePerTeam,omitempty"`
+	// MaxDependenciesPerSession caps incoming dependency edges. 0 uses
+	// DefaultMaxDependenciesPerSession.
+	MaxDependenciesPerSession int `json:"maxDependenciesPerSession,omitempty"`
+	// DefaultDependencyState is "auto" (empty) or one required state. Auto
+	// infers each edge from the dependency's output type.
+	DefaultDependencyState string `json:"defaultDependencyState,omitempty"`
+}
+
+// DefaultMaxDependenciesPerSession is the built-in cap on incoming edges,
+// matching the spec's recommended value.
+const DefaultMaxDependenciesPerSession = 16
+
+// DependencyLimit resolves the effective incoming-edge cap.
+func (c SchedulingConfig) DependencyLimit() int {
+	if c.MaxDependenciesPerSession > 0 {
+		return c.MaxDependenciesPerSession
+	}
+	return DefaultMaxDependenciesPerSession
 }
 
 // ContainerReapConfig is the project-level opt-out for #2652's Docker
@@ -272,7 +305,31 @@ func (c ProjectConfig) Validate() error {
 	if err := c.TrackerIntake.Validate(); err != nil {
 		return err
 	}
+	if err := c.Scheduling.Validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// Validate rejects negative limits and an unknown default dependency state.
+func (c SchedulingConfig) Validate() error {
+	for name, value := range map[string]int{
+		"maxActiveSessions":         c.MaxActiveSessions,
+		"maxActivePerTeam":          c.MaxActivePerTeam,
+		"maxDependenciesPerSession": c.MaxDependenciesPerSession,
+	} {
+		if value < 0 {
+			return fmt.Errorf("scheduling.%s: must not be negative", name)
+		}
+	}
+	switch c.DefaultDependencyState {
+	case "", "auto":
+		return nil
+	case "ready", "merged", "completed":
+		return nil
+	default:
+		return fmt.Errorf("scheduling.defaultDependencyState: unknown state %q", c.DefaultDependencyState)
+	}
 }
 
 func validEnvName(name string) bool {
