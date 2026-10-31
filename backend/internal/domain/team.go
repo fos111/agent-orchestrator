@@ -126,10 +126,11 @@ func teamMemberFromRecord(rec SessionRecord) TeamMember {
 
 // Team is a derived snapshot of one orchestrator subtree.
 //
-// Members holds the non-terminated roster, including the lead. ActiveWorkers
-// counts non-terminated workers only: the lead is exempt from the limit and a
-// terminated member is not active. MaxActiveWorkers is the effective limit; a
-// zero limit means unlimited.
+// Members holds the non-terminated roster, including the lead and any
+// pre-launch queued or blocked candidates. ActiveWorkers counts only workers
+// that occupy an admission slot: the lead is exempt from the limit, and a
+// terminated or pre-launch candidate is not active. MaxActiveWorkers is the
+// effective limit; a zero limit means unlimited.
 type Team struct {
 	RootSessionID    SessionID    `json:"rootSessionId"`
 	ProjectID        ProjectID    `json:"projectId"`
@@ -279,7 +280,12 @@ func (i *TeamIndex) buildTeam(root SessionID, maxActiveWorkers int) Team {
 	members := i.Members(root)
 	active := 0
 	for _, member := range members {
-		if member.Kind == KindWorker {
+		if member.Kind != KindWorker {
+			continue
+		}
+		// Mirror admission occupancy: a queued or blocked candidate is on the
+		// roster but has not been admitted, so it does not consume the team cap.
+		if rec, ok := i.records[member.SessionID]; ok && rec.SchedulingActive() {
 			active++
 		}
 	}

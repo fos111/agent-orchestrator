@@ -166,15 +166,19 @@ func TestTeamIndexMembership(t *testing.T) {
 	standalone.CreatedAt = at(4)
 	otherLead := teamSession("ao-6", "", domain.KindOrchestrator, project)
 	otherLead.CreatedAt = at(5)
+	blocked := teamSession("ao-7", "ao-1", domain.KindWorker, project)
+	blocked.CreatedAt = at(6)
+	blocked.SchedulingState = domain.SchedulingBlocked
+	blocked.BlockedReason = string(domain.BlockedTeamLimit)
 
-	idx := domain.NewTeamIndex([]domain.SessionRecord{standalone, terminated, worker, lead, hidden, otherLead})
+	idx := domain.NewTeamIndex([]domain.SessionRecord{standalone, terminated, worker, lead, hidden, otherLead, blocked})
 
 	if roots := idx.Roots(); len(roots) != 2 || roots[0] != "ao-1" || roots[1] != "ao-6" {
 		t.Fatalf("Roots() = %v, want [ao-1 ao-6]", roots)
 	}
 	members := idx.Members("ao-1")
-	if len(members) != 2 || members[0].SessionID != "ao-1" || members[1].SessionID != "ao-2" {
-		t.Fatalf("Members(ao-1) = %+v, want lead and active worker only", members)
+	if len(members) != 3 || members[0].SessionID != "ao-1" || members[1].SessionID != "ao-2" || members[2].SessionID != "ao-7" {
+		t.Fatalf("Members(ao-1) = %+v, want lead, active worker, and blocked candidate", members)
 	}
 	if _, ok := idx.Record("ao-4"); ok {
 		t.Fatal("hidden task-preparation row must not be indexed")
@@ -191,7 +195,7 @@ func TestTeamIndexMembership(t *testing.T) {
 		t.Fatalf("team identity = %+v", team)
 	}
 	if team.ActiveWorkers != 1 {
-		t.Fatalf("ActiveWorkers = %d, want 1 (lead exempt, terminated excluded)", team.ActiveWorkers)
+		t.Fatalf("ActiveWorkers = %d, want 1 (lead exempt, terminated and blocked excluded)", team.ActiveWorkers)
 	}
 	if team.Orchestrator.SessionID != "ao-1" {
 		t.Fatalf("Orchestrator = %+v", team.Orchestrator)
