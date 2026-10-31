@@ -20,7 +20,7 @@ func enrich(intent Intent) (domain.NotificationRecord, error) {
 	if !intent.Type.Valid() {
 		return domain.NotificationRecord{}, domain.ErrInvalidNotificationType
 	}
-	if intent.Type != domain.NotificationNeedsInput && rec.PRURL == "" {
+	if prScoped(intent.Type) && rec.PRURL == "" {
 		return domain.NotificationRecord{}, domain.ErrInvalidNotificationRecord
 	}
 	rec.Title = titleForIntent(intent)
@@ -35,6 +35,8 @@ func titleForIntent(intent Intent) string {
 	switch intent.Type {
 	case domain.NotificationNeedsInput:
 		return fmt.Sprintf("%s needs your input", sessionLabel(intent))
+	case domain.NotificationSessionCrashed:
+		return fmt.Sprintf("%s crashed", sessionLabel(intent))
 	case domain.NotificationReadyToMerge:
 		if title := strings.TrimSpace(intent.PRTitle); title != "" {
 			if label := prLabel(intent); label != "PR" {
@@ -60,6 +62,8 @@ func bodyForIntent(intent Intent) string {
 	switch intent.Type {
 	case domain.NotificationNeedsInput:
 		return "Your agent is waiting on you to continue."
+	case domain.NotificationSessionCrashed:
+		return "The session's runtime stopped unexpectedly. Resume the session to continue."
 	case domain.NotificationReadyToMerge:
 		if session := sessionLabel(intent); session != "session" {
 			return fmt.Sprintf("PR from session %s is ready to merge. CI passed with no blocking review feedback.", session)
@@ -85,6 +89,20 @@ func bodyForIntent(intent Intent) string {
 		return "Orchestrator finished reviewing this pull request and found changes to address."
 	default:
 		return ""
+	}
+}
+
+// prScoped reports whether a notification type describes a pull request and
+// therefore cannot be stored without one. Session-scoped types describe a
+// session's own lifecycle (an agent waiting on the user, a runtime crash) and
+// carry no PR context.
+func prScoped(t domain.NotificationType) bool {
+	switch t {
+	case domain.NotificationReadyToMerge, domain.NotificationPRMerged, domain.NotificationPRClosedUnmerged,
+		domain.NotificationReviewCompleted, domain.NotificationReviewChangesRequested:
+		return true
+	default:
+		return false
 	}
 }
 
