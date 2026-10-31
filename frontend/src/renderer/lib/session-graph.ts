@@ -1,7 +1,12 @@
 import { isArchivedSession } from "./standalone-archive";
 import {
+	sessionDependencies,
+	sessionDependents,
+	sessionSchedulingState,
 	sortedPRs,
 	type PullRequestFacts,
+	type SessionBlockedReason,
+	type SessionSchedulingState,
 	type WorkspaceSession,
 } from "../types/workspace";
 
@@ -17,20 +22,44 @@ export type SessionGraphNode = {
 	width: number;
 	height: number;
 	contextOnly: boolean;
+	/** Where the scheduler put this session; drives the queued and blocked visuals. */
+	schedulingState: SessionSchedulingState;
+	/** Why a blocked node is waiting, printed beside its state. */
+	blockedReason?: SessionBlockedReason;
+	/**
+	 * Dependencies this session waits on, including ones the current filter
+	 * hides, so the node can say what it is not showing.
+	 */
+	dependencyCount: number;
+	/** Of {@link dependencyCount}, how many have no drawn edge. */
+	hiddenDependencyCount: number;
+	/** Sessions waiting on this one. */
+	dependentCount: number;
 };
+
+export type SessionGraphEdgeKind = "spawn" | "delivers" | "depends";
 
 export type SessionGraphEdge = {
 	id: string;
 	from: string;
 	to: string;
-	kind: "spawn" | "delivers";
+	kind: SessionGraphEdgeKind;
 };
+
+export type SessionGraphDroppedEdgeReason =
+	| "missing-parent"
+	| "cross-project"
+	| "cycle"
+	| "self"
+	| "filtered";
 
 export type SessionGraphDroppedEdge = {
 	from: string;
 	to: string;
-	reason: "missing-parent" | "cross-project" | "cycle" | "self";
+	reason: SessionGraphDroppedEdgeReason;
 };
+
+export type SessionGraphLayout = "spawn" | "dependency";
 
 export type SessionGraph = {
 	nodes: SessionGraphNode[];
@@ -43,6 +72,16 @@ export type SessionGraph = {
 
 export type BuildSessionGraphOptions = {
 	includeArchived: boolean;
+	/**
+	 * Draw dependency edges. Defaults to true: they are the whole point of the
+	 * coordination graph, and a session without dependencies draws none either way.
+	 */
+	showDependencies?: boolean;
+	/**
+	 * `spawn` keeps the tree the board has always drawn, with dependency edges as
+	 * an overlay. `dependency` lays sessions out by dependency depth instead.
+	 */
+	layout?: SessionGraphLayout;
 };
 
 export const SESSION_GRAPH_NODE_WIDTH = 232;
@@ -104,6 +143,165 @@ function dropCycleEdges(
 	}
 }
 
+type DependencyPair = { from: string; to: string };
+
+/**
+ * The dependency edges to draw, from dependency to dependent. A dependency the
+ * session list does not contain cannot be drawn and is reported instead, so the
+ * node can still say how many it is not showing.
+ */
+function collectDependencyPairs(
+	ordered: readonly WorkspaceSession[],
+	byId: ReadonlyMap<string, WorkspaceSession>,
+	droppedEdges: SessionGraphDroppedEdge[],
+): DependencyPair[] {
+	const pairs: DependencyPair[] = [];
+	const seen = new Set<string>();
+	for (const session of ordered) {
+		for (const dependency of sessionDependencies(session)) {
+			const from = dependency.sessionId;
+			const to = session.id;
+			if (from === to) {
+				droppedEdges.push({ from: sessionKey(from), to: sessionKey(to), reason: "self" });
+				continue;
+			}
+			if (!byId.has(from)) {
+				droppedEdges.push({ from: sessionKey(from), to: sessionKey(to), reason: "filtered" });
+				continue;
+			}
+			const id = `${from}\u0000${to}`;
+			if (seen.has(id)) continue;
+			seen.add(id);
+			pairs.push({ from, to });
+		}
+	}
+	return pairs;
+}
+
+/**
+ * Drop the edges that close a dependency cycle. The daemon refuses to create
+ * one, but a stored graph can still be cyclic after a partial write, and the
+ * layered layout needs a DAG.
+ */
+function dropDependencyCycles(
+	pairs: readonly DependencyPair[],
+	orderedIds: readonly string[],
+	droppedEdges: SessionGraphDroppedEdge[],
+): DependencyPair[] {
+	const adjacency = new Map<string, string[]>();
+	for (const pair of pairs) {
+		const list = adjacency.get(pair.from) ?? [];
+		list.push(pair.to);
+		adjacency.set(pair.from, list);
+	}
+	const state = new Map<string, "visiting" | "done">();
+	const dropped = new Set<string>();
+	const visit = (id: string): void => {
+		state.set(id, "visiting");
+		for (const next of adjacency.get(id) ?? []) {
+			const edgeId = `${id}\u0000${next}`;
+			if (dropped.has(edgeId)) continue;
+			const nextState = state.get(next);
+			if (nextState === "visiting") {
+				dropped.add(edgeId);
+				droppedEdges.push({ from: sessionKey(id), to: sessionKey(next), reason: "cycle" });
+				continue;
+			}
+			if (nextState === undefined) visit(next);
+		}
+		state.set(id, "done");
+	};
+	for (const id of orderedIds) {
+		if (state.get(id) === undefined) visit(id);
+	}
+	return pairs.filter((pair) => !dropped.has(`${pair.from}\u0000${pair.to}`));
+}
+
+/**
+ * Layered DAG placement for `layout=dependency`. Roots are the sessions with no
+ * dependency inside the filter; depth is the longest path from a root, so every
+ * dependency edge points one or more rows downwards. Rows are centred and
+ * separated, which keeps a multi-parent DAG overlap-free without a graph
+ * library or the tree subtree-width algorithm (which cannot express two parents).
+ */
+function placeDependencyLayers(
+	nodeByKey: ReadonlyMap<string, SessionGraphNode>,
+	dependencyPairs: readonly DependencyPair[],
+	ordered: readonly WorkspaceSession[],
+): string[] {
+	const sessionOrder = new Map(ordered.map((session, index) => [session.id, index]));
+	const incoming = new Map<string, string[]>();
+	for (const pair of dependencyPairs) {
+		const list = incoming.get(pair.to) ?? [];
+		list.push(pair.from);
+		incoming.set(pair.to, list);
+	}
+	const depthBySession = new Map<string, number>();
+	const depthOf = (id: string): number => {
+		const known = depthBySession.get(id);
+		if (known !== undefined) return known;
+		// Written before recursing so a cycle that survived the drop pass cannot
+		// recurse forever.
+		depthBySession.set(id, 0);
+		let depth = 0;
+		for (const from of incoming.get(id) ?? []) {
+			if (!nodeByKey.has(sessionKey(from))) continue;
+			depth = Math.max(depth, depthOf(from) + 1);
+		}
+		depthBySession.set(id, depth);
+		return depth;
+	};
+
+	const layerByKey = new Map<string, number>();
+	for (const node of nodeByKey.values()) {
+		if (node.kind === "session") layerByKey.set(node.key, depthOf(node.session.id));
+	}
+	for (const node of nodeByKey.values()) {
+		if (node.kind !== "pr") continue;
+		layerByKey.set(node.key, (node.parentKey ? layerByKey.get(node.parentKey) ?? 0 : 0) + 1);
+	}
+
+	const maxLayer = Math.max(0, ...layerByKey.values());
+	const layers: SessionGraphNode[][] = Array.from({ length: maxLayer + 1 }, () => []);
+	for (const node of nodeByKey.values()) {
+		layers[layerByKey.get(node.key) ?? 0].push(node);
+	}
+	const sortKey = (node: SessionGraphNode): [number, number, number] => [
+		sessionOrder.get(node.session.id) ?? 0,
+		node.kind === "session" ? 0 : 1,
+		node.pr?.number ?? 0,
+	];
+	for (const row of layers) {
+		row.sort((left, right) => {
+			const [leftSession, leftKind, leftPR] = sortKey(left);
+			const [rightSession, rightKind, rightPR] = sortKey(right);
+			return leftSession - rightSession || leftKind - rightKind || leftPR - rightPR;
+		});
+	}
+
+	const rowWidths = layers.map(
+		(row) => row.reduce((width, node) => width + node.width, 0) + SESSION_GRAPH_H_GAP * Math.max(row.length - 1, 0),
+	);
+	const widestRow = Math.max(0, ...rowWidths);
+
+	const nodeOrder: string[] = [];
+	let y = SESSION_GRAPH_PADDING;
+	layers.forEach((row, layer) => {
+		let x = SESSION_GRAPH_PADDING + (widestRow - (rowWidths[layer] ?? 0)) / 2;
+		let rowHeight = 0;
+		for (const node of row) {
+			node.depth = layer;
+			node.x = x;
+			node.y = y;
+			x += node.width + SESSION_GRAPH_H_GAP;
+			rowHeight = Math.max(rowHeight, node.height);
+			nodeOrder.push(node.key);
+		}
+		y += rowHeight + SESSION_GRAPH_V_GAP;
+	});
+	return nodeOrder;
+}
+
 export function buildSessionGraph(
 	sessions: readonly WorkspaceSession[],
 	options: BuildSessionGraphOptions,
@@ -149,6 +347,12 @@ export function buildSessionGraph(
 
 	dropCycleEdges(ordered, parentById, droppedEdges);
 
+	const dependencyPairs = dropDependencyCycles(
+		collectDependencyPairs(ordered, byId, droppedEdges),
+		ordered.map((session) => session.id),
+		droppedEdges,
+	);
+
 	const includedIds = new Set<string>();
 	const contextOnlyIds = new Set<string>();
 	for (const session of ordered) {
@@ -157,6 +361,26 @@ export function buildSessionGraph(
 		}
 	}
 	if (!options.includeArchived) {
+		// A visible session's archived dependency stays in the graph as a
+		// context-only node, matching the archived-ancestor rule, so the
+		// dependency edge does not dangle. Its own dependencies follow, so the
+		// whole chain stays visible.
+		const pending = [...includedIds];
+		const visited = new Set(pending);
+		while (pending.length > 0) {
+			const id = pending.pop();
+			if (id === undefined) continue;
+			const session = byId.get(id);
+			if (!session) continue;
+			for (const dependency of sessionDependencies(session)) {
+				const dependencyId = dependency.sessionId;
+				if (visited.has(dependencyId) || !byId.has(dependencyId)) continue;
+				visited.add(dependencyId);
+				includedIds.add(dependencyId);
+				contextOnlyIds.add(dependencyId);
+				pending.push(dependencyId);
+			}
+		}
 		for (const session of ordered) {
 			if (!includedIds.has(session.id)) continue;
 			const seen = new Set<string>([session.id]);
@@ -194,6 +418,11 @@ export function buildSessionGraph(
 			width: SESSION_GRAPH_NODE_WIDTH,
 			height: SESSION_GRAPH_SESSION_HEIGHT,
 			contextOnly: contextOnlyIds.has(session.id),
+			schedulingState: sessionSchedulingState(session),
+			blockedReason: session.blockedReason,
+			dependencyCount: sessionDependencies(session).length,
+			hiddenDependencyCount: 0,
+			dependentCount: sessionDependents(session).length,
 		};
 		nodeByKey.set(key, node);
 		if (parentKey === null) roots.push(key);
@@ -217,6 +446,11 @@ export function buildSessionGraph(
 				width: SESSION_GRAPH_NODE_WIDTH,
 				height: SESSION_GRAPH_PR_HEIGHT,
 				contextOnly: contextOnlyIds.has(session.id),
+				schedulingState: sessionSchedulingState(session),
+				blockedReason: session.blockedReason,
+				dependencyCount: 0,
+				hiddenDependencyCount: 0,
+				dependentCount: 0,
 			};
 			nodeByKey.set(key, node);
 		}
@@ -243,6 +477,26 @@ export function buildSessionGraph(
 			to: node.key,
 			kind: node.kind === "pr" ? "delivers" : "spawn",
 		});
+	}
+	if (options.showDependencies !== false) {
+		for (const pair of dependencyPairs) {
+			if (!includedIds.has(pair.from) || !includedIds.has(pair.to)) {
+				droppedEdges.push({
+					from: sessionKey(pair.from),
+					to: sessionKey(pair.to),
+					reason: "filtered",
+				});
+				const dependentNode = nodeByKey.get(sessionKey(pair.to));
+				if (dependentNode) dependentNode.hiddenDependencyCount += 1;
+				continue;
+			}
+			edges.push({
+				id: `depends:${pair.from}:${pair.to}`,
+				from: sessionKey(pair.from),
+				to: sessionKey(pair.to),
+				kind: "depends",
+			});
+		}
 	}
 
 	const subtreeWidth = new Map<string, number>();
@@ -296,12 +550,16 @@ export function buildSessionGraph(
 		cursor += (subtreeWidth.get(key) ?? 0) + SESSION_GRAPH_ROOT_GAP;
 	}
 
-	const nodeOrder: string[] = [];
+	const spawnOrder: string[] = [];
 	const collect = (key: string): void => {
-		nodeOrder.push(key);
+		spawnOrder.push(key);
 		for (const child of childrenByKey.get(key) ?? []) collect(child);
 	};
 	for (const key of roots) collect(key);
+
+	const nodeOrder = options.layout === "dependency"
+		? placeDependencyLayers(nodeByKey, dependencyPairs, ordered)
+		: spawnOrder;
 
 	let right = 0;
 	let bottom = 0;

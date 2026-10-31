@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GitBranch, GitPullRequest, Minus, Plus, RotateCcw } from "lucide-react";
+import { Clock, GitBranch, GitPullRequest, Lock, Minus, Plus, RotateCcw } from "lucide-react";
 import { AgentAvatar } from "./AgentAvatar";
 import { ProductExternalLink } from "./ProductExternalLink";
 import {
+	getSessionSchedulingView,
 	getSessionStatusDotView,
 	getSessionStatusView,
 } from "../lib/session-presentation";
@@ -38,6 +39,45 @@ function edgePath(parent: SessionGraphNode, child: SessionGraphNode): string {
 	const middle = (endY - startY) / 2;
 	return `M ${startX} ${startY} C ${startX} ${startY + middle}, ${endX} ${endY - middle}, ${endX} ${endY}`;
 }
+
+/**
+ * Where a straight line between two node centres leaves a node's border, so a
+ * dependency arrow starts and ends on the box instead of inside it — the spawn
+ * layout puts a dependency above, below, or beside its dependent.
+ */
+function borderPoint(node: SessionGraphNode, dx: number, dy: number): { x: number; y: number } {
+	const centerX = node.x + node.width / 2;
+	const centerY = node.y + node.height / 2;
+	if (dx === 0 && dy === 0) return { x: centerX, y: centerY };
+	const scaleX = dx === 0 ? Number.POSITIVE_INFINITY : node.width / 2 / Math.abs(dx);
+	const scaleY = dy === 0 ? Number.POSITIVE_INFINITY : node.height / 2 / Math.abs(dy);
+	const scale = Math.min(scaleX, scaleY);
+	return { x: centerX + dx * scale, y: centerY + dy * scale };
+}
+
+/** Dependency edges run in any direction, so they curve on their dominant axis. */
+function dependencyPath(from: SessionGraphNode, to: SessionGraphNode): string {
+	const dx = to.x + to.width / 2 - (from.x + from.width / 2);
+	const dy = to.y + to.height / 2 - (from.y + from.height / 2);
+	const start = borderPoint(from, dx, dy);
+	const end = borderPoint(to, -dx, -dy);
+	const horizontal = Math.abs(dx) >= Math.abs(dy);
+	const firstControl = horizontal
+		? { x: start.x + dx / 2, y: start.y }
+		: { x: start.x, y: start.y + dy / 2 };
+	const secondControl = horizontal
+		? { x: end.x - dx / 2, y: end.y }
+		: { x: end.x, y: end.y - dy / 2 };
+	return `M ${start.x} ${start.y} C ${firstControl.x} ${firstControl.y}, ${secondControl.x} ${secondControl.y}, ${end.x} ${end.y}`;
+}
+
+const EDGE_CLASS: Record<SessionGraphEdge["kind"], string> = {
+	spawn: "stroke-border",
+	delivers: "stroke-border opacity-60",
+	depends: "stroke-muted-foreground",
+};
+
+const DEPENDENCY_ARROW_ID = "session-graph-dependency-arrow";
 
 export function SessionGraphCanvas({ graph, onOpenSession }: SessionGraphCanvasProps) {
 	const { t } = useTranslation();
@@ -91,6 +131,7 @@ export function SessionGraphCanvas({ graph, onOpenSession }: SessionGraphCanvasP
 		}
 		const kindLabel = session.kind === "orchestrator" ? t("shell.orchestrator") : t("shell.worker");
 		const statusLabel = getSessionStatusView(session.status, t).label;
+		const scheduling = getSessionSchedulingView(session, t);
 		const parent = activeNode.parentKey ? nodeByKey.get(activeNode.parentKey) : undefined;
 		return (
 			<>
@@ -98,6 +139,23 @@ export function SessionGraphCanvas({ graph, onOpenSession }: SessionGraphCanvasP
 				<span>
 					{kindLabel} · {statusLabel}
 				</span>
+				{scheduling.tone !== "none" ? (
+					<span data-testid="session-graph-scheduling">
+						{scheduling.label}
+						{scheduling.reason ? ` · ${scheduling.reason}` : ""}
+					</span>
+				) : null}
+				{activeNode.dependencyCount > 0 ? (
+					<span>{t("shell.graphDependenciesCount", { count: activeNode.dependencyCount })}</span>
+				) : null}
+				{activeNode.dependentCount > 0 ? (
+					<span>{t("shell.graphDependentsCount", { count: activeNode.dependentCount })}</span>
+				) : null}
+				{activeNode.hiddenDependencyCount > 0 ? (
+					<span>
+						{t("shell.graphHiddenDependencies", { count: activeNode.hiddenDependencyCount })}
+					</span>
+				) : null}
 				{session.branch ? (
 					<span className="inline-flex min-w-0 items-center gap-1">
 						<GitBranch className="size-3 shrink-0" aria-hidden="true" />
@@ -120,6 +178,7 @@ export function SessionGraphCanvas({ graph, onOpenSession }: SessionGraphCanvasP
 		if (!parent || !child) return null;
 		const dimmed =
 			activeKey !== null && edge.from !== activeKey && edge.to !== activeKey;
+		const isDependency = edge.kind === "depends";
 		return (
 			<path
 				key={edge.id}
@@ -127,14 +186,25 @@ export function SessionGraphCanvas({ graph, onOpenSession }: SessionGraphCanvasP
 				data-edge-kind={edge.kind}
 				data-dimmed={dimmed ? "true" : undefined}
 				className={cn(
-					"fill-none stroke-border motion-safe:transition-opacity",
+					"fill-none motion-safe:transition-opacity",
+					EDGE_CLASS[edge.kind],
 					dimmed && "opacity-20",
 				)}
-				d={edgePath(parent, child)}
-				strokeDasharray={edge.kind === "delivers" ? "4 4" : undefined}
-				strokeWidth={1.5}
+				d={isDependency ? dependencyPath(parent, child) : edgePath(parent, child)}
+				strokeDasharray={isDependency ? "6 4" : edge.kind === "delivers" ? "4 4" : undefined}
+				strokeWidth={isDependency ? 1.75 : 1.5}
+				markerEnd={isDependency ? `url(#${DEPENDENCY_ARROW_ID})` : undefined}
 				vectorEffect="non-scaling-stroke"
-			/>
+			>
+				{isDependency ? (
+					<title>
+						{t("shell.graphDependencyEdge", {
+							from: parent.session.title,
+							to: child.session.title,
+						})}
+					</title>
+				) : null}
+			</path>
 		);
 	};
 
@@ -143,28 +213,43 @@ export function SessionGraphCanvas({ graph, onOpenSession }: SessionGraphCanvasP
 		const kindLabel = session.kind === "orchestrator" ? t("shell.orchestrator") : t("shell.worker");
 		const status = getSessionStatusView(session.status, t);
 		const dot = getSessionStatusDotView(session, t);
+		const scheduling = getSessionSchedulingView(session, t);
 		const archived = node.contextOnly || isArchivedSession(session);
 		const dimmed = activeKey !== null && !highlightedKeys.has(node.key);
+		const accessibleName = [
+			session.title,
+			kindLabel,
+			status.label,
+			scheduling.label,
+			scheduling.reason,
+		]
+			.filter(Boolean)
+			.join(", ");
 		return (
 			<button
 				key={node.key}
 				type="button"
 				data-node-key={node.key}
 				data-node-kind={node.kind}
+				data-scheduling-state={scheduling.tone === "none" ? undefined : scheduling.state}
 				data-context-only={node.contextOnly ? "true" : undefined}
 				data-dimmed={dimmed ? "true" : undefined}
-				aria-label={`${session.title}, ${kindLabel}, ${status.label}`}
+				aria-label={accessibleName}
 				title={
 					node.contextOnly
 						? t("shell.graphArchivedContext")
-						: archived
-							? t("shell.graphArchived")
-							: undefined
+						: scheduling.reason
+							? scheduling.reason
+							: archived
+								? t("shell.graphArchived")
+								: undefined
 				}
 				className={cn(
 					"absolute flex flex-col justify-center gap-1 rounded-lg border border-border bg-card px-3 text-left text-card-foreground shadow-sm",
 					"motion-safe:transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
 					archived && "border-dashed opacity-70",
+					scheduling.tone === "queued" && "border-dashed",
+					scheduling.tone === "blocked" && "border-warning",
 					dimmed && "opacity-30",
 				)}
 				style={{
@@ -198,12 +283,53 @@ export function SessionGraphCanvas({ graph, onOpenSession }: SessionGraphCanvasP
 						)}
 					/>
 					<span className="truncate">{status.label}</span>
+					{scheduling.tone !== "none" ? (
+						<span
+							data-scheduling-badge={scheduling.state}
+							className={cn(
+								"inline-flex shrink-0 items-center gap-1 rounded border px-1 text-[10px]",
+								scheduling.tone === "blocked"
+									? "border-warning/60 text-warning"
+									: "border-border text-muted-foreground",
+							)}
+						>
+							{scheduling.tone === "blocked" ? (
+								<Lock className="size-3" aria-hidden="true" />
+							) : (
+								<Clock className="size-3" aria-hidden="true" />
+							)}
+							{scheduling.label}
+						</span>
+					) : null}
 					{archived ? (
 						<span className="shrink-0 rounded border border-border px-1 text-[10px]">
 							{t("shell.graphArchived")}
 						</span>
 					) : null}
 				</span>
+				{node.dependencyCount > 0 || node.dependentCount > 0 || node.hiddenDependencyCount > 0 ? (
+					<span className="flex min-w-0 items-center gap-2 truncate text-xs text-muted-foreground">
+						{node.dependencyCount > 0 ? (
+							<span className="truncate">
+								{t("shell.graphDependenciesCount", { count: node.dependencyCount })}
+							</span>
+						) : null}
+						{node.dependentCount > 0 ? (
+							<span className="truncate">
+								{t("shell.graphDependentsCount", { count: node.dependentCount })}
+							</span>
+						) : null}
+						{/* A dependency the graph cannot draw still exists; say how many. */}
+						{node.hiddenDependencyCount > 0 ? (
+							<span
+								className="truncate"
+								data-testid="session-graph-hidden-dependencies"
+							>
+								{t("shell.graphHiddenDependencies", { count: node.hiddenDependencyCount })}
+							</span>
+						) : null}
+					</span>
+				) : null}
 				{session.branch ? (
 					<span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
 						<GitBranch className="size-3 shrink-0" aria-hidden="true" />
@@ -331,6 +457,21 @@ export function SessionGraphCanvas({ graph, onOpenSession }: SessionGraphCanvasP
 							height={graph.height}
 							viewBox={`0 0 ${graph.width} ${graph.height}`}
 						>
+							<defs>
+								{/* The arrowhead is the dependency edge's direction signal, so
+								    the meaning survives without colour. */}
+								<marker
+									id={DEPENDENCY_ARROW_ID}
+									viewBox="0 0 8 8"
+									refX="7"
+									refY="4"
+									markerWidth="7"
+									markerHeight="7"
+									orient="auto"
+								>
+									<path d="M 0 0 L 8 4 L 0 8 z" className="fill-muted-foreground" />
+								</marker>
+							</defs>
 							{graph.edges.map(renderEdge)}
 						</svg>
 						{graph.nodes.map((node) =>
