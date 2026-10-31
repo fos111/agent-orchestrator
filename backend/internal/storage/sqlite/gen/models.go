@@ -874,6 +874,22 @@ type ShellTerminal struct {
 	PreviewCapabilityVerifier string
 }
 
+type TeamMessage struct {
+	ID                string
+	ProjectID         string
+	TeamRootSessionID string
+	SenderSessionID   string
+	Body              string
+	CreatedAt         time.Time
+}
+
+type TeamMessageDelivery struct {
+	MessageID string
+	SessionID string
+	Status    string
+	Error     string
+}
+
 type TelemetryEvent struct {
 	ID          string
 	OccurredAt  time.Time

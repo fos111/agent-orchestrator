@@ -4884,6 +4884,45 @@ paths:
       summary: Submit a DAG run atomically
       tags:
       - sessions
+  /api/v1/projects/{projectId}/teams:
+    get:
+      operationId: listProjectTeams
+      parameters:
+      - description: Project whose orchestrator teams are listed.
+        in: path
+        name: projectId
+        required: true
+        schema:
+          description: Project whose orchestrator teams are listed.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTeamsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List a project's derived orchestrator teams
+      tags:
+      - teams
   /api/v1/projects/clone:
     post:
       operationId: cloneProject
@@ -13228,6 +13267,102 @@ paths:
       summary: Cancel an unclaimed speculative task worktree
       tags:
       - projects
+  /api/v1/teams/{rootSessionId}:
+    get:
+      operationId: getTeam
+      parameters:
+      - description: Orchestrator session at the root of the derived team.
+        in: path
+        name: rootSessionId
+        required: true
+        schema:
+          description: Orchestrator session at the root of the derived team.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get one derived team by its orchestrator root
+      tags:
+      - teams
+  /api/v1/teams/{rootSessionId}/messages:
+    post:
+      operationId: broadcastTeamMessage
+      parameters:
+      - description: Orchestrator session at the root of the derived team.
+        in: path
+        name: rootSessionId
+        required: true
+        schema:
+          description: Orchestrator session at the root of the derived team.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BroadcastTeamMessageRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BroadcastTeamMessageResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Broadcast a best-effort message to every team member except the sender
+      tags:
+      - teams
   /api/v1/telemetry/identity:
     get:
       operationId: getTelemetryIdentity
@@ -14818,6 +14953,40 @@ components:
       - reason
       - paused
       - networkOutcome
+      type: object
+    BroadcastTeamMessageRequest:
+      properties:
+        message:
+          description: Best-effort message delivered to every non-terminated team
+            member except the sender.
+          maxLength: 32768
+          minLength: 1
+          type: string
+        senderSessionId:
+          type: string
+      required:
+      - message
+      type: object
+    BroadcastTeamMessageResponse:
+      properties:
+        delivered:
+          type: integer
+        deliveries:
+          items:
+            $ref: '#/components/schemas/TeamMessageDelivery'
+          type: array
+        failed:
+          type: integer
+        message:
+          $ref: '#/components/schemas/TeamMessage'
+        ok:
+          type: boolean
+      required:
+      - ok
+      - message
+      - deliveries
+      - delivered
+      - failed
       type: object
     BrowserCommandRequest:
       properties:
@@ -18667,6 +18836,15 @@ components:
       required:
       - shellTerminals
       type: object
+    ListTeamsResponse:
+      properties:
+        teams:
+          items:
+            $ref: '#/components/schemas/Team'
+          type: array
+      required:
+      - teams
+      type: object
     ListWorkspaceFilesResponse:
       properties:
         ahead:
@@ -22201,6 +22379,95 @@ components:
       - ready
       - requirements
       type: object
+    Team:
+      properties:
+        activeWorkers:
+          type: integer
+        maxActiveWorkers:
+          type: integer
+        members:
+          items:
+            $ref: '#/components/schemas/TeamMember'
+          type: array
+        orchestrator:
+          $ref: '#/components/schemas/TeamMember'
+        projectId:
+          type: string
+        rootSessionId:
+          type: string
+      required:
+      - rootSessionId
+      - projectId
+      - orchestrator
+      - members
+      - activeWorkers
+      - maxActiveWorkers
+      type: object
+    TeamEnvelope:
+      properties:
+        team:
+          $ref: '#/components/schemas/Team'
+      required:
+      - team
+      type: object
+    TeamMember:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        displayName:
+          type: string
+        isTerminated:
+          type: boolean
+        kind:
+          type: string
+        parentSessionId:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - kind
+      - isTerminated
+      - createdAt
+      type: object
+    TeamMessage:
+      properties:
+        body:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        projectId:
+          type: string
+        senderSessionId:
+          type: string
+        teamRootSessionId:
+          type: string
+      required:
+      - id
+      - projectId
+      - teamRootSessionId
+      - body
+      - createdAt
+      type: object
+    TeamMessageDelivery:
+      properties:
+        error:
+          type: string
+        messageId:
+          type: string
+        sessionId:
+          type: string
+        status:
+          type: string
+      required:
+      - messageId
+      - sessionId
+      - status
+      type: object
     TelemetryIdentityResponse:
       properties:
         cloudUserId:
@@ -23394,3 +23661,5 @@ tags:
   name: link-preview
 - description: Local GitHub personal access token storage and repository listing
   name: github
+- description: Derived orchestrator teams and best-effort team broadcasts
+  name: teams

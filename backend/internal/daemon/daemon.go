@@ -74,9 +74,11 @@ import (
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
+	schedsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/scheduling"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
+	teamsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/team"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
@@ -1037,6 +1039,13 @@ func Run(buildVersion string) error {
 	// Terminal hooks pass the hook process gate: a Claude process other than
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
+	// Teams are derived from the durable spawn-parent tree; only broadcasts and
+	// their per-member delivery results are stored.
+	teamService := teamsvc.New(teamsvc.Deps{
+		Teams:  schedsvc.NewTeamService(store),
+		Store:  store,
+		Sender: sessionSvc,
+	})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
@@ -1066,6 +1075,7 @@ func Run(buildVersion string) error {
 		Directories:        fsbrowsersvc.New(),
 		ShellTerminals:     shellTermSvc,
 		Cues:               cuesvc.New(cuesvc.Deps{Store: store, Sessions: sessionSvc, Terminals: shellTermSvc}),
+		Teams:              teamService,
 		AgentAuth:          agentAuthSvc,
 		GitHub:             newGitHubStatusService(githubpat.New(cfg.DataDir), prReader),
 		Conversations:      chatSvc,

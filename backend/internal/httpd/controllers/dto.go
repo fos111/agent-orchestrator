@@ -4061,3 +4061,45 @@ type SwitchSessionAgentAccountRequest struct {
 	// account's limit. Otherwise the move waits for the turn to finish.
 	StopTurn bool `json:"stopTurn,omitempty"`
 }
+
+// TeamProjectIDParam is the {projectId} path parameter of the project-scoped
+// team list route.
+type TeamProjectIDParam struct {
+	ProjectID string `path:"projectId" description:"Project whose orchestrator teams are listed."`
+}
+
+// TeamRootSessionIDParam is the {rootSessionId} path parameter of the team
+// status and broadcast routes.
+type TeamRootSessionIDParam struct {
+	RootSessionID string `path:"rootSessionId" description:"Orchestrator session at the root of the derived team."`
+}
+
+// TeamEnvelope is the body of GET /api/v1/teams/{rootSessionId}.
+type TeamEnvelope struct {
+	Team domain.Team `json:"team"`
+}
+
+// ListTeamsResponse is the body of GET /api/v1/projects/{projectId}/teams.
+type ListTeamsResponse struct {
+	Teams []domain.Team `json:"teams"`
+}
+
+// BroadcastTeamMessageRequest is the body of
+// POST /api/v1/teams/{rootSessionId}/messages.
+type BroadcastTeamMessageRequest struct {
+	// SenderSessionID is the member to exclude from delivery. Empty means the
+	// broadcast came from a surface with no owning session, such as the desktop
+	// team composer, and every member receives it.
+	SenderSessionID string `json:"senderSessionId,omitempty"`
+	Message         string `json:"message" minLength:"1" maxLength:"32768" description:"Best-effort message delivered to every non-terminated team member except the sender."`
+}
+
+// BroadcastTeamMessageResponse reports the persisted broadcast and each
+// member's delivery outcome. A failed member is a result, not an API error.
+type BroadcastTeamMessageResponse struct {
+	OK         bool                         `json:"ok"`
+	Message    domain.TeamMessage           `json:"message"`
+	Deliveries []domain.TeamMessageDelivery `json:"deliveries"`
+	Delivered  int                          `json:"delivered"`
+	Failed     int                          `json:"failed"`
+}
