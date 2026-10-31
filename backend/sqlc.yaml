@@ -235,6 +235,26 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "SessionProvisionState"
+          # Dependency scheduling: the state and the override flag are typed so a
+          # caller cannot write an unknown state or a non-boolean override.
+          - column: "sessions.scheduling_state"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SchedulingState"
+          - column: "sessions.admission_override"
+            go_type: "bool"
+          - column: "session_dependencies.session_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionID"
+          - column: "session_dependencies.depends_on_session_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionID"
+          - column: "session_dependencies.required_state"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DependencyRequiredState"
           - column: "sessions.is_task_preparation"
             go_type: "bool"
           - column: "sessions.session_mode"

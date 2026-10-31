@@ -344,7 +344,7 @@ type SessionRecord struct {
 	// visible — and receive queued messages — before its worktree and controller
 	// do. Sessions written before asynchronous spawn existed read back as
 	// SessionProvisionReady.
-	ProvisionState SessionProvisionState `json:"provisionState,omitempty" enum:"provisioning,ready,failed"`
+	ProvisionState SessionProvisionState `json:"provisionState,omitempty" enum:"queued,provisioning,ready,failed"`
 	// ProvisionError explains a failed start in the user's terms. It is kept on
 	// the row rather than discarded with it, because the user is already looking
 	// at the session by the time the start can fail.
@@ -354,6 +354,26 @@ type SessionRecord struct {
 	// boundary, and kept after the start settles. A step still running when the
 	// session reads ProvisionState failed is the step that failed.
 	ProvisionSteps []SessionProvisionStep `json:"provisionSteps,omitempty"`
+	// SchedulingState answers whether this session may launch. A queued or
+	// blocked session owns no workspace and no terminal. Rows written before
+	// dependency scheduling existed read back as immediate.
+	SchedulingState SchedulingState `json:"schedulingState,omitempty" enum:"immediate,queued,blocked,admitted,cancelled"`
+	// BlockedReason explains a blocked scheduling state. Empty for every other
+	// state.
+	BlockedReason string `json:"blockedReason,omitempty" description:"Why the session is blocked: dependency_pending, dependency_failed, dependency_cancelled, dependency_missing, dependency_cycle, dependency_unsatisfiable, project_limit, team_limit, launch_failed, or invalid."`
+	// CompletedAt is the explicit completion fact for an artifact or no-PR
+	// session. PR sessions complete through their PR facts instead.
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	// AdmittedAt is when the scheduler authorized this session's launch.
+	AdmittedAt *time.Time `json:"admittedAt,omitempty"`
+	// AdmissionOverride records a forced admission that bypassed dependencies or
+	// limits.
+	AdmissionOverride bool `json:"admissionOverride,omitempty"`
+	// QueuedSpawnConfig is the normalized spawn request used to launch this
+	// session after admission. It is internal lifecycle data: it contains the
+	// prompt and the resolved agent selection but no credentials, and it never
+	// appears in the API read model.
+	QueuedSpawnConfig string `json:"-"`
 	// BranchState is what the daemon last observed about the session branch:
 	// its commits on top of the base and whether they reached the remote. The
 	// branch-state reconcile writes it only when a fact changes; nil until the first
@@ -469,6 +489,12 @@ type SessionProvisionState string
 type TaskPreparationToken string
 
 const (
+	// SessionProvisionQueued means the session exists only as a durable queue
+	// entry. It owns no worktree and no controller until the scheduler admits it.
+	// It is a read-model value derived from a pre-launch scheduling state, not a
+	// stored one: the provision_state CHECK predates dependency scheduling and
+	// keeps 'provisioning' for those rows.
+	SessionProvisionQueued SessionProvisionState = "queued"
 	// SessionProvisionProvisioning means the row and its conversation exist; the
 	// worktree, the agent controller, or both do not yet. Messages sent now are
 	// queued and dispatched by the controller when it arrives.
@@ -489,13 +515,27 @@ func (s SessionProvisionState) WithDefault() SessionProvisionState {
 	return s
 }
 
-// IsProvisioning reports whether the session is still being built.
+// IsProvisioning reports whether the session is still being built. A queued
+// session has not been built at all, so it counts as provisioning here.
 func (s SessionProvisionState) IsProvisioning() bool {
-	return s == SessionProvisionProvisioning
+	return s == SessionProvisionProvisioning || s == SessionProvisionQueued
 }
 
 // IsStandalone reports whether the session has no registered project owner.
 func (s SessionRecord) IsStandalone() bool { return s.ProjectID == "" }
+
+// SchedulingActive reports whether this session occupies a project scheduling
+// slot. A queued or blocked session is not active; a terminated or hidden
+// preparation row never is.
+func (s SessionRecord) SchedulingActive() bool {
+	return !s.IsTerminated && !s.IsTaskPreparation && s.SchedulingState.WithDefault().CountsAsActive()
+}
+
+// PreLaunchQueued reports whether the session is a durable queue entry with no
+// workspace or terminal.
+func (s SessionRecord) PreLaunchQueued() bool {
+	return !s.IsTerminated && s.SchedulingState.IsPreLaunch()
+}
 
 // SessionControllerOwner is the durable identity of the process/controller
 // currently allowed to act for a session. Narrow lifecycle writes compare this
@@ -556,6 +596,13 @@ type Session struct {
 	// They feed status derivation and are surfaced on the API read model. Not
 	// serialized here: the HTTP boundary maps them to the curated wire shape.
 	PRs []PRFacts `json:"-"`
+	// DependsOn is the session's incoming dependency edges, derived at read time.
+	// It is server-derived because older daemons and remote hosts may not have
+	// the full graph in the renderer.
+	DependsOn []SessionDependencyStatus `json:"dependsOn,omitempty"`
+	// Dependents lists sessions whose dependencies include this one. It is a
+	// reverse lookup for the detail panel.
+	Dependents []SessionID `json:"dependents,omitempty"`
 }
 
 // LastEventAt is when something a person would notice last happened to the
