@@ -675,6 +675,185 @@ func TestRuntimeObservation_StaleLaunchIsIgnored(t *testing.T) {
 	}
 }
 
+func TestRuntimeObservation_ConfirmedCrashEmitsOneNotification(t *testing.T) {
+	observed := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	sink := &fakeNotificationSink{}
+	m, st, _ := newManager(WithNotificationSink(sink))
+	m.clock = func() time.Time { return observed }
+	rec := working("mer-1")
+	rec.DisplayName = "checkout-flow"
+	rec.Metadata.RuntimeLaunchID = "launch-1"
+	rec.Activity.LastActivityAt = observed.Add(-2 * time.Minute)
+	st.sessions[rec.ID] = rec
+
+	if err := m.ApplyRuntimeObservation(ctx, rec.ID, ports.RuntimeFacts{
+		Runtime:    ports.ProbeDead,
+		Workload:   ports.ProbeFailed,
+		LaunchID:   "launch-1",
+		ObservedAt: observed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !st.sessions[rec.ID].IsTerminated {
+		t.Fatal("confirmed death must terminate the session")
+	}
+	if len(sink.intents) != 1 {
+		t.Fatalf("intents = %d, want exactly 1 crash alert: %+v", len(sink.intents), sink.intents)
+	}
+	got := sink.intents[0]
+	if got.Type != domain.NotificationSessionCrashed {
+		t.Fatalf("type = %q, want %q", got.Type, domain.NotificationSessionCrashed)
+	}
+	if got.SessionID != rec.ID || got.ProjectID != rec.ProjectID || got.SessionDisplayName != "checkout-flow" {
+		t.Fatalf("intent lost session identity: %+v", got)
+	}
+	if got.SourceKey != "session_crashed:mer-1:launch-1" {
+		t.Fatalf("source key = %q, want a launch-scoped key", got.SourceKey)
+	}
+	if got.PRURL != "" {
+		t.Fatalf("crash intent carried a PR URL: %q", got.PRURL)
+	}
+	if !got.CreatedAt.Equal(observed) {
+		t.Fatalf("created at = %v, want observation time %v", got.CreatedAt, observed)
+	}
+}
+
+func TestRuntimeObservation_RepeatedCrashDoesNotEmitNotification(t *testing.T) {
+	observed := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	sink := &fakeNotificationSink{}
+	m, st, _ := newManager(WithNotificationSink(sink))
+	m.clock = func() time.Time { return observed }
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-1"
+	rec.Activity.LastActivityAt = observed.Add(-2 * time.Minute)
+	st.sessions[rec.ID] = rec
+	facts := ports.RuntimeFacts{
+		Runtime:    ports.ProbeDead,
+		Workload:   ports.ProbeFailed,
+		LaunchID:   "launch-1",
+		ObservedAt: observed,
+	}
+
+	if err := m.ApplyRuntimeObservation(ctx, rec.ID, facts); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyRuntimeObservation(ctx, rec.ID, facts); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 {
+		t.Fatalf("repeated observation emitted %d crash alerts, want 1", len(sink.intents))
+	}
+}
+
+func TestRuntimeObservation_CrashWithoutLaunchFallsBackToSessionSourceKey(t *testing.T) {
+	observed := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	sink := &fakeNotificationSink{}
+	m, st, _ := newManager(WithNotificationSink(sink))
+	m.clock = func() time.Time { return observed }
+	rec := working("mer-1")
+	rec.Activity.LastActivityAt = observed.Add(-2 * time.Minute)
+	st.sessions[rec.ID] = rec
+
+	if err := m.ApplyRuntimeObservation(ctx, rec.ID, ports.RuntimeFacts{
+		Runtime:    ports.ProbeDead,
+		Workload:   ports.ProbeFailed,
+		ObservedAt: observed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 {
+		t.Fatalf("intents = %d, want 1", len(sink.intents))
+	}
+	if got := sink.intents[0].SourceKey; got != "session_crashed:mer-1" {
+		t.Fatalf("source key = %q, want the session-only fallback", got)
+	}
+}
+
+func TestMarkTerminated_DoesNotEmitCrashNotification(t *testing.T) {
+	sink := &fakeNotificationSink{}
+	m, st, _ := newManager(WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+
+	if err := m.MarkTerminated(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("MarkTerminated must still terminate the session")
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("explicit termination emitted crash alerts: %+v", sink.intents)
+	}
+}
+
+// Every observation that is not a reaper-confirmed death must stay silent:
+// ambiguous probes, stale launches, workload death under a live runtime,
+// recent activity, and a runtime AO released on purpose (agent exit).
+func TestRuntimeObservation_NonCrashPathsEmitNoNotification(t *testing.T) {
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	oldActivity := domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-2 * time.Minute)}
+	tests := []struct {
+		name  string
+		rec   domain.SessionRecord
+		facts ports.RuntimeFacts
+	}{
+		{
+			name:  "probe failed",
+			rec:   domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Activity: oldActivity},
+			facts: ports.RuntimeFacts{Runtime: ports.ProbeFailed, Workload: ports.ProbeFailed, ObservedAt: now},
+		},
+		{
+			name: "stale launch",
+			rec: domain.SessionRecord{
+				ID: "mer-1", ProjectID: "mer", Activity: oldActivity,
+				Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-2"},
+			},
+			facts: ports.RuntimeFacts{Runtime: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now},
+		},
+		{
+			name: "workload dead while runtime alive",
+			rec: domain.SessionRecord{
+				ID: "mer-1", ProjectID: "mer", Activity: oldActivity,
+				Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1"},
+			},
+			facts: ports.RuntimeFacts{Runtime: ports.ProbeAlive, Workload: ports.ProbeDead, LaunchID: "launch-1", ObservedAt: now},
+		},
+		{
+			name:  "recent activity",
+			rec:   domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}},
+			facts: ports.RuntimeFacts{Runtime: ports.ProbeDead, ObservedAt: now},
+		},
+		{
+			name: "released runtime after agent exit",
+			rec: domain.SessionRecord{
+				ID: "mer-1", ProjectID: "mer",
+				Activity: domain.Activity{State: domain.ActivityExited, LastActivityAt: now.Add(-2 * time.Minute)},
+				Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1", RuntimeReleasedLaunchID: "launch-1"},
+			},
+			facts: ports.RuntimeFacts{Runtime: ports.ProbeDead, Workload: ports.ProbeFailed, LaunchID: "launch-1", ObservedAt: now},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &fakeNotificationSink{}
+			m, st, _ := newManager(WithNotificationSink(sink))
+			m.clock = func() time.Time { return now }
+			st.sessions[tt.rec.ID] = tt.rec
+
+			if err := m.ApplyRuntimeObservation(ctx, tt.rec.ID, tt.facts); err != nil {
+				t.Fatal(err)
+			}
+			if st.sessions[tt.rec.ID].IsTerminated {
+				t.Fatalf("%s terminated the session", tt.name)
+			}
+			if len(sink.intents) != 0 {
+				t.Fatalf("%s emitted crash alerts: %+v", tt.name, sink.intents)
+			}
+		})
+	}
+}
+
 func TestActivity_InvalidIsIgnored(t *testing.T) {
 	m, st, _ := newManager()
 	st.sessions["mer-1"] = working("mer-1")

@@ -442,6 +442,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		terminationLaunch   string
 		terminationRevision int64
 		shouldTerminate     bool
+		terminatedSession   domain.SessionRecord
 	)
 	if err := m.mutate(ctx, id, func(cur domain.SessionRecord, now time.Time) (domain.SessionRecord, bool) {
 		if cur.IsTerminated || !matchesLaunch(cur) {
@@ -498,6 +499,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		delete(m.flights, id)
 		delete(m.steps, id)
 		terminated = true
+		terminatedSession = next
 		return next, true
 	})
 	if err != nil {
@@ -509,8 +511,37 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		// runtime reaper must not leave the session's Docker containers behind
 		// just because it never called MarkTerminated directly.
 		m.reapSessionContainers(ctx, id)
+		// Only this path knows the runtime died without AO asking for it.
+		// Explicit kills, agent exits, and daemon-shutdown teardown go through
+		// MarkTerminated, which stays silent. Best-effort like every other
+		// lifecycle notification: a failed emit must never undo the termination.
+		m.emitNotification(ctx, crashNotificationIntent(terminatedSession, f))
 	}
 	return nil
+}
+
+// crashNotificationIntent describes the one durable alert for a reaper-confirmed
+// runtime death. The source key pins dedupe to the launched runtime, so repeated
+// observations of the same crash converge on one record; the session-only key is
+// the fallback when no launch id is known. Copy is built by enrich from the
+// session label only — no logs, paths, prompts, or provider payloads.
+func crashNotificationIntent(rec domain.SessionRecord, f ports.RuntimeFacts) *ports.NotificationIntent {
+	launchID := strings.TrimSpace(rec.Metadata.RuntimeLaunchID)
+	if launchID == "" {
+		launchID = strings.TrimSpace(f.LaunchID)
+	}
+	sourceKey := fmt.Sprintf("session_crashed:%s", rec.ID)
+	if launchID != "" {
+		sourceKey = fmt.Sprintf("session_crashed:%s:%s", rec.ID, launchID)
+	}
+	return &ports.NotificationIntent{
+		Type:               domain.NotificationSessionCrashed,
+		SessionID:          rec.ID,
+		ProjectID:          rec.ProjectID,
+		CreatedAt:          rec.Activity.LastActivityAt,
+		SourceKey:          sourceKey,
+		SessionDisplayName: rec.DisplayName,
+	}
 }
 
 // A concurrent session writer can advance updated_at between lifecycle's read
