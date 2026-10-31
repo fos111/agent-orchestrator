@@ -2011,6 +2011,122 @@ describe("SessionsBoard artifacts", () => {
 			params: { projectId: "p1", sessionId: "w1" },
 		});
 	});
+
+	it("shows pre-admission work in the queue strip and opens its dependency panel", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "dep", title: "Foundation", status: "working" }),
+					boardSession({
+						id: "q1",
+						title: "Queued task",
+						status: "working",
+						schedulingState: "queued",
+						dependsOn: [
+							{ sessionId: "dep", requiredState: "merged", satisfied: false },
+						],
+					}),
+					boardSession({
+						id: "b1",
+						title: "Blocked task",
+						status: "working",
+						schedulingState: "blocked",
+						blockedReason: "dependency_pending",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoard("p1");
+
+		const strip = screen.getByTestId("sessions-queue-strip");
+		expect(within(strip).getByText("Queued task")).toBeInTheDocument();
+		expect(within(strip).getByText("Blocked task")).toBeInTheDocument();
+		expect(screen.getByTestId("sessions-queue-count")).toHaveTextContent("2");
+		// Pre-delivery work is not a kanban card: each name appears only in the strip.
+		expect(screen.getAllByText("Queued task")).toHaveLength(1);
+		expect(screen.getAllByText("Blocked task")).toHaveLength(1);
+
+		fireEvent.click(
+			within(strip).getByRole("button", { name: "Dependencies for Queued task" }),
+		);
+
+		const panel = screen.getByTestId("session-dependencies-panel");
+		expect(within(panel).getByRole("heading", { name: "Dependencies" })).toBeInTheDocument();
+		expect(within(panel).getByRole("button", { name: "Foundation" })).toBeInTheDocument();
+	});
+
+	it("admits a queued session with force from the queue strip", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "q1",
+						title: "Queued task",
+						status: "working",
+						schedulingState: "queued",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoard("p1");
+
+		fireEvent.click(screen.getByRole("button", { name: "Admit now" }));
+		fireEvent.click(
+			within(screen.getByRole("dialog")).getByRole("button", { name: "Admit now" }),
+		);
+
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/admit", {
+				params: { path: { sessionId: "q1" } },
+				body: { force: true },
+			}),
+		);
+	});
+
+	it("passes the layout and edge filters through to the graph", () => {
+		const onLayoutChange = vi.fn();
+		const onEdgesChange = vi.fn();
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({ id: "w1", title: "Build graph", status: "working" })])],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoardWithProps({
+			projectId: "p1",
+			view: "graph",
+			onViewChange: vi.fn(),
+			onShowArchivedChange: vi.fn(),
+			layout: "dependency",
+			onLayoutChange,
+			edges: ["spawn", "depends"],
+			onEdgesChange,
+		});
+
+		expect(screen.getByRole("button", { name: "Dependency" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Spawn" }));
+		expect(onLayoutChange).toHaveBeenCalledWith("spawn");
+
+		fireEvent.click(screen.getByRole("button", { name: "Dependencies" }));
+		expect(onEdgesChange).toHaveBeenCalledWith(["spawn"]);
+	});
+
+	it("renders no queue strip for sessions without dependencies", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({ id: "w1", title: "Plain task", status: "working" })])],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoard("p1");
+
+		expect(screen.queryByTestId("sessions-queue-strip")).not.toBeInTheDocument();
+	});
 });
 
 function workspaceWithSessions(sessions: WorkspaceSession[]): WorkspaceSummary {

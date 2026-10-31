@@ -312,3 +312,131 @@ describe("buildSessionGraph", () => {
 		expect(graph.nodes[0]?.session.title).toBe("first");
 	});
 });
+
+describe("buildSessionGraph dependency edges", () => {
+	function dependency(sessionId: string, requiredState: "ready" | "merged" | "completed" = "merged") {
+		return { sessionId, requiredState, satisfied: false };
+	}
+
+	it("draws an edge from the dependency to the dependent and counts both directions", () => {
+		const graph = buildSessionGraph(
+			[
+				makeWorker("a", "2026-01-01T00:00:00Z"),
+				makeWorker("b", "2026-01-01T00:01:00Z", undefined, {
+					dependsOn: [dependency("a")],
+					dependents: [],
+				}),
+			],
+			{ includeArchived: false },
+		);
+
+		expect(graph.edges).toContainEqual({
+			id: "depends:a:b",
+			from: "session:a",
+			to: "session:b",
+			kind: "depends",
+		});
+		const dependencyNode = graph.nodes.find((node) => node.key === "session:a");
+		const dependentNode = graph.nodes.find((node) => node.key === "session:b");
+		expect(dependencyNode?.dependentCount).toBe(0);
+		expect(dependentNode?.dependencyCount).toBe(1);
+		expect(dependentNode?.hiddenDependencyCount).toBe(0);
+	});
+
+	it("reports and counts a dependency the filter hides", () => {
+		const graph = buildSessionGraph(
+			[
+				makeWorker("b", "2026-01-01T00:01:00Z", undefined, {
+					dependsOn: [dependency("ghost")],
+				}),
+			],
+			{ includeArchived: false },
+		);
+
+		expect(graph.edges.filter((edge) => edge.kind === "depends")).toEqual([]);
+		expect(graph.droppedEdges).toContainEqual({
+			from: "session:ghost",
+			to: "session:b",
+			reason: "filtered",
+		});
+		const dependentNode = graph.nodes.find((node) => node.key === "session:b");
+		expect(dependentNode?.dependencyCount).toBe(1);
+		expect(dependentNode?.hiddenDependencyCount).toBe(1);
+	});
+
+	it("includes an archived dependency as a context-only node", () => {
+		const archived = makeWorker("a", "2026-01-01T00:00:00Z", undefined, {
+			status: "terminated",
+			isTerminated: true,
+			kanbanColumn: "archive",
+		});
+		const dependent = makeWorker("b", "2026-01-01T00:01:00Z", undefined, {
+			dependsOn: [dependency("a")],
+		});
+
+		const graph = buildSessionGraph([archived, dependent], { includeArchived: false });
+
+		expect(graph.nodes.find((node) => node.key === "session:a")?.contextOnly).toBe(true);
+		expect(graph.edges).toContainEqual(
+			expect.objectContaining({ from: "session:a", to: "session:b", kind: "depends" }),
+		);
+	});
+
+	it("drops a dependency edge that closes a cycle", () => {
+		const graph = buildSessionGraph(
+			[
+				makeWorker("a", "2026-01-01T00:00:00Z", undefined, { dependsOn: [dependency("b")] }),
+				makeWorker("b", "2026-01-01T00:01:00Z", undefined, { dependsOn: [dependency("a")] }),
+			],
+			{ includeArchived: false },
+		);
+
+		expect(graph.edges.filter((edge) => edge.kind === "depends")).toHaveLength(1);
+		expect(graph.droppedEdges).toContainEqual(
+			expect.objectContaining({ reason: "cycle" }),
+		);
+	});
+
+	it("layers a multi-parent DAG by longest path without overlap", () => {
+		const graph = buildSessionGraph(
+			[
+				makeWorker("a", "2026-01-01T00:00:00Z"),
+				makeWorker("b", "2026-01-01T00:01:00Z"),
+				makeWorker("c", "2026-01-01T00:02:00Z", undefined, {
+					dependsOn: [dependency("a"), dependency("b")],
+				}),
+				makeWorker("d", "2026-01-01T00:03:00Z", undefined, {
+					dependsOn: [dependency("c")],
+				}),
+			],
+			{ includeArchived: false, layout: "dependency" },
+		);
+
+		const node = (id: string) => graph.nodes.find((candidate) => candidate.key === `session:${id}`);
+		expect(node("a")?.depth).toBe(0);
+		expect(node("b")?.depth).toBe(0);
+		expect(node("c")?.depth).toBe(1);
+		expect(node("d")?.depth).toBe(2);
+		expect(node("c")?.y).toBeGreaterThan(node("a")?.y ?? 0);
+		expect(node("d")?.y).toBeGreaterThan(node("c")?.y ?? 0);
+
+		for (const edge of graph.edges.filter((candidate) => candidate.kind === "depends")) {
+			expect(node(edge.from.slice("session:".length))?.y).toBeLessThan(
+				node(edge.to.slice("session:".length))?.y ?? 0,
+			);
+		}
+
+		for (let index = 0; index < graph.nodes.length; index += 1) {
+			for (let other = index + 1; other < graph.nodes.length; other += 1) {
+				const left = graph.nodes[index];
+				const right = graph.nodes[other];
+				const overlaps =
+					left.x < right.x + right.width &&
+					right.x < left.x + left.width &&
+					left.y < right.y + right.height &&
+					right.y < left.y + left.height;
+				expect(overlaps).toBe(false);
+			}
+		}
+	});
+});

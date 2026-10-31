@@ -486,8 +486,6 @@ export function buildSessionGraph(
 					to: sessionKey(pair.to),
 					reason: "filtered",
 				});
-				const dependentNode = nodeByKey.get(sessionKey(pair.to));
-				if (dependentNode) dependentNode.hiddenDependencyCount += 1;
 				continue;
 			}
 			edges.push({
@@ -497,6 +495,21 @@ export function buildSessionGraph(
 				kind: "depends",
 			});
 		}
+	}
+
+	// Count every dependency the graph does not draw — filtered, missing from the
+	// data, or hidden by the toggle — so a node can say what it is not showing.
+	const drawnDependencies = new Set(
+		edges
+			.filter((edge) => edge.kind === "depends")
+			.map((edge) => `${edge.from}\u0000${edge.to}`),
+	);
+	for (const node of nodeByKey.values()) {
+		if (node.kind !== "session") continue;
+		node.hiddenDependencyCount = sessionDependencies(node.session).filter(
+			(dependency) =>
+				!drawnDependencies.has(`${sessionKey(dependency.sessionId)}\u0000${node.key}`),
+		).length;
 	}
 
 	const subtreeWidth = new Map<string, number>();
