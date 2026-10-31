@@ -149,3 +149,34 @@ type SessionDependencySpec struct {
 	SessionID     SessionID
 	RequiredState DependencyRequiredState
 }
+
+// DependencySnapshot is the derived delivery facts the scheduler needs to
+// evaluate one edge. Nothing in it is stored: the Kanban column and the PR
+// aggregate are computed at read time, so the queue follows the same delivery
+// rules the board does instead of a second, divergent predicate.
+type DependencySnapshot struct {
+	// Found is false when the dependency row no longer exists.
+	Found           bool
+	SchedulingState SchedulingState
+	IsTerminated    bool
+	CompletedAt     *time.Time
+	OutputType      SessionOutputType
+	KanbanColumn    KanbanColumn
+	// PRCount counts the dependency's attributed PRs, and AllPRsMerged says
+	// every one of them is merged. PRCount == 0 with AllPRsMerged false is the
+	// "no PR yet" case, not a vacuously merged one.
+	PRCount      int
+	AllPRsMerged bool
+}
+
+// Succeeded reports whether a terminated dependency reached a success fact.
+// A termination without one is a failure, not a satisfied edge.
+func (s DependencySnapshot) Succeeded() bool {
+	if s.CompletedAt != nil {
+		return true
+	}
+	if s.KanbanColumn == KanbanReady {
+		return true
+	}
+	return s.PRCount > 0 && s.AllPRsMerged
+}

@@ -92,10 +92,13 @@ WHERE id = sqlc.arg(id)
 
 -- name: MarkSessionSchedulingLaunched :execrows
 -- A successful launch leaves the admitted state and becomes an ordinary active
--- session. Guarded so a cancelled session is never resurrected.
+-- session, so it also finishes the provisioning a reservation started.
+-- Guarded so a cancelled session is never resurrected.
 UPDATE sessions
 SET scheduling_state = 'immediate',
     blocked_reason = '',
+    provision_state = 'ready',
+    provision_error = '',
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND scheduling_state = 'admitted';
@@ -158,4 +161,14 @@ WHERE project_id = ?
   AND is_terminated = 0
   AND workspace_path = ''
   AND runtime_handle_id = ''
+ORDER BY admitted_at, id;
+
+-- name: ListAdmittedSessionsWithWorkspace :many
+-- Crash recovery: an admitted row that already owns a workspace or runtime was
+-- launched, but the transition to an ordinary active session never committed.
+SELECT id FROM sessions
+WHERE project_id = ?
+  AND scheduling_state = 'admitted'
+  AND is_terminated = 0
+  AND (workspace_path <> '' OR runtime_handle_id <> '')
 ORDER BY admitted_at, id;

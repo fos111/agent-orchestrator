@@ -343,6 +343,9 @@ type Store interface {
 	CreateSessionWithDependencies(ctx context.Context, rec domain.SessionRecord, deps []domain.SessionDependency) (domain.SessionRecord, error)
 	CreateAutomationSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error)
 	CreateClientRequestSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error)
+	// CancelQueuedSession terminates a pre-launch reservation that owns no
+	// workspace, so kill has nothing to tear down.
+	CancelQueuedSession(ctx context.Context, id domain.SessionID, now time.Time) (bool, error)
 	GetSessionByClientRequestID(ctx context.Context, id string) (domain.SessionRecord, bool, error)
 	CommitClientRequestSession(ctx context.Context, id domain.SessionID) error
 	UpdateSession(ctx context.Context, rec domain.SessionRecord) error
@@ -1689,6 +1692,13 @@ func (m *Manager) LaunchSpawn(ctx context.Context, id domain.SessionID) (domain.
 	if err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("spawn %s: %w", id, err)
 	}
+	// Environment-dependent validation is authoritative at launch: the harness
+	// may have been uninstalled, or its binary removed from PATH, while the
+	// session waited in the queue. The service checked at reserve for fast
+	// feedback; this check is the one the launch depends on.
+	if err := m.ensureLaunchAgentReadiness(ctx, cfg.Harness); err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("spawn %s: %w", id, err)
+	}
 	// A launch never replays create-side identity: the request key was committed
 	// at reserve, an automation run has exactly one row, and a preparation token
 	// is a UI hint that must not leak into the materialized session.
@@ -1703,6 +1713,23 @@ func (m *Manager) LaunchSpawn(ctx context.Context, id domain.SessionID) (domain.
 		return domain.SessionRecord{}, err
 	}
 	return out, nil
+}
+
+// ensureLaunchAgentReadiness re-runs the daemon's agent readiness check at
+// launch. It reports ports.ErrAgentBinaryNotFound when the harness is gone so
+// callers keep the same sentinel the immediate-spawn path uses.
+func (m *Manager) ensureLaunchAgentReadiness(ctx context.Context, harness domain.AgentHarness) error {
+	if m.agentReadiness == nil || harness == "" {
+		return nil
+	}
+	readiness, err := m.agentReadiness.EnsureAgentReadiness(ctx, string(harness), domain.AgentReadinessPurposeLaunch)
+	if err != nil {
+		return err
+	}
+	if readiness.Installation.State == domain.AgentInstallationNotInstalled {
+		return fmt.Errorf("%w: %s", ports.ErrAgentBinaryNotFound, harness)
+	}
+	return nil
 }
 
 func (m *Manager) lockSessionLaunch(id domain.SessionID) func() {
@@ -2832,6 +2859,32 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	}
 	if !ok {
 		return KillResult{}, nil // already gone: benign race
+	}
+	// A queued or blocked session owns no workspace, runtime, or controller, so
+	// killing it is a single durable transition. The launch lock keeps this
+	// from racing the scheduler mid-launch: if a launch wins, the row is no
+	// longer pre-launch and the ordinary teardown below owns it.
+	if rec.SchedulingState.IsPreLaunch() {
+		unlock := m.lockSessionLaunch(id)
+		cancelled, cancelErr := m.store.CancelQueuedSession(ctx, id, m.clock())
+		unlock()
+		if cancelErr != nil {
+			return KillResult{}, fmt.Errorf("kill %s: cancel queued session: %w", id, cancelErr)
+		}
+		if cancelled {
+			return KillResult{}, nil
+		}
+		reloaded, stillThere, reloadErr := m.store.GetSession(ctx, id)
+		if reloadErr != nil {
+			return KillResult{}, fmt.Errorf("kill %s: reload after admission: %w", id, reloadErr)
+		}
+		if !stillThere {
+			return KillResult{}, nil
+		}
+		if reloaded.SchedulingState.IsPreLaunch() {
+			return KillResult{}, fmt.Errorf("kill %s: session is still queued", id)
+		}
+		rec = reloaded
 	}
 	m.stopPreviewBestEffort(ctx, id)
 	m.destroyBrowserBestEffort(ctx, id)

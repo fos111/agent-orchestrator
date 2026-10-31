@@ -107,6 +107,22 @@ func (f *fakeStore) CreateSession(_ context.Context, rec domain.SessionRecord) (
 	return rec, nil
 }
 
+// CancelQueuedSession mirrors the pre-launch cancel: it only applies while the
+// row is queued or blocked, and it never touches workspace facts.
+func (f *fakeStore) CancelQueuedSession(_ context.Context, id domain.SessionID, now time.Time) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok || !rec.SchedulingState.IsPreLaunch() {
+		return false, nil
+	}
+	rec.SchedulingState = domain.SchedulingCancelled
+	rec.BlockedReason = ""
+	rec.IsTerminated = true
+	rec.ProvisionState = domain.SessionProvisionReady
+	rec.UpdatedAt = now
+	f.sessions[id] = rec
+	return true, nil
+}
+
 // CreateSessionWithDependencies mirrors the atomic store write: the row and its
 // edges land together, and a duplicate edge fails the whole create.
 func (f *fakeStore) CreateSessionWithDependencies(ctx context.Context, rec domain.SessionRecord, deps []domain.SessionDependency) (domain.SessionRecord, error) {

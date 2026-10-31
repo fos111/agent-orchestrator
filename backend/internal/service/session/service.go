@@ -38,6 +38,7 @@ type Store interface {
 	RenameSession(ctx context.Context, id domain.SessionID, displayName string, updatedAt time.Time) (bool, error)
 	RenameSessionIfDisplayName(ctx context.Context, id domain.SessionID, currentDisplayName, displayName string, updatedAt time.Time) (bool, error)
 	SetSessionPreviewURL(ctx context.Context, id domain.SessionID, previewURL string, updatedAt time.Time) (bool, error)
+	SetSessionCompleted(ctx context.Context, id domain.SessionID, completedAt time.Time) (bool, error)
 	SetSessionTerminateOnPRMerge(ctx context.Context, id domain.SessionID, terminate bool, updatedAt time.Time) (bool, error)
 	SetSessionAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error)
 	SetSessionAutoInjectCI(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error)
@@ -258,6 +259,10 @@ type Service struct {
 	// runsOnComputerLogin reports whether a new session would launch on the
 	// computer's own CLI login rather than a saved account. Nil means always.
 	runsOnComputerLogin func(context.Context, domain.AgentHarness, string) bool
+	// scheduling is the dependency scheduler's controllable surface. It is
+	// latched after construction because the scheduler reads this service's
+	// dependency snapshots while this service wakes its queue.
+	scheduling SchedulingController
 }
 
 // SetComputerLoginCheck late-binds the account check the launch gate needs: the
@@ -270,6 +275,20 @@ func (s *Service) SetComputerLoginCheck(check func(ctx context.Context, harness 
 // services have been constructed. It performs no provider or filesystem probes.
 func (s *Service) SetChatProviderPreserver(preserves func(domain.SessionID) bool) {
 	s.chatProviderPreserved = preserves
+}
+
+// SchedulingController is the dependency scheduler's controllable surface. The
+// session service wakes it after any fact that can change admission and
+// delegates explicit admit requests to it, so scheduling transitions keep one
+// writer.
+type SchedulingController interface {
+	Notify(projectID domain.ProjectID)
+	Admit(ctx context.Context, id domain.SessionID, force bool) (domain.SessionRecord, error)
+}
+
+// SetSchedulingController late-binds the scheduler after both services exist.
+func (s *Service) SetSchedulingController(controller SchedulingController) {
+	s.scheduling = controller
 }
 
 // New wires a controller-facing session service over an internal session Manager.
@@ -477,6 +496,11 @@ func (s *Service) spawnWithTelemetry(ctx context.Context, cfg ports.SpawnConfig,
 	s.emitSpawned(ctx, rec, s.now().Sub(start).Milliseconds())
 	if firstSession {
 		s.emitFirstSessionSpawned(ctx, rec, project)
+	}
+	if len(cfg.Dependencies) > 0 {
+		// The reservation is durable; let the scheduler evaluate it now instead
+		// of on the next tick. Dependencies may already be satisfied.
+		s.notifyScheduling(rec.ProjectID)
 	}
 	return rec, promptBytes, systemPromptBytes, nil
 }
@@ -1034,6 +1058,7 @@ func restoreModeView(mode sessionmanager.RestoreMode) RestoreModeView {
 // Kill delegates terminal intent and teardown to the internal manager.
 func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	s.cancelTitleRefinement(id)
+	projectID := s.projectIDFor(ctx, id)
 	freed, err := s.manager.Kill(ctx, id)
 	if err != nil {
 		apiErr := toAPIError(err)
@@ -1044,12 +1069,15 @@ func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	if s.usageArchiveFlush != nil {
 		s.usageArchiveFlush(ctx)
 	}
+	// A killed dependency blocks its dependents; they are not cancelled.
+	s.notifyScheduling(projectID)
 	return freed, nil
 }
 
 // RequestKill acknowledges terminal intent without waiting for cleanup scripts.
 func (s *Service) RequestKill(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error) {
 	s.cancelTitleRefinement(id)
+	projectID := s.projectIDFor(ctx, id)
 	result, err := s.manager.RequestKill(ctx, id)
 	if err != nil {
 		apiErr := toAPIError(err)
@@ -1064,7 +1092,58 @@ func (s *Service) RequestKill(ctx context.Context, id domain.SessionID) (session
 	if s.usageArchiveFlush != nil {
 		s.usageArchiveFlush(ctx)
 	}
+	s.notifyScheduling(projectID)
 	return result, nil
+}
+
+// Complete records the explicit completion fact a non-PR task needs, because
+// neither a PR merge nor a close will ever arrive for it. It is idempotent: a
+// session that is already complete returns the same read model.
+func (s *Service) Complete(ctx context.Context, id domain.SessionID) (domain.Session, error) {
+	rec, found, err := s.store.GetSession(ctx, id)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("complete %s: %w", id, err)
+	}
+	if !found || rec.IsTaskPreparation {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if rec.IsTerminated && rec.CompletedAt == nil {
+		return domain.Session{}, apierr.Conflict("SESSION_TERMINATED", "A terminated session cannot be completed", nil)
+	}
+	if _, err := s.store.SetSessionCompleted(ctx, id, s.now()); err != nil {
+		return domain.Session{}, err
+	}
+	s.notifyScheduling(rec.ProjectID)
+	return s.Get(ctx, id)
+}
+
+// Admit asks the dependency scheduler to admit a queued or blocked session now.
+// A forced admit bypasses dependencies and limits and records the override.
+func (s *Service) Admit(ctx context.Context, id domain.SessionID, force bool) (domain.Session, error) {
+	if s.scheduling == nil {
+		return domain.Session{}, apierr.Conflict("SESSION_NOT_ADMITTABLE", "This build cannot schedule sessions", nil)
+	}
+	rec, err := s.scheduling.Admit(ctx, id, force)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	return s.Get(ctx, rec.ID)
+}
+
+func (s *Service) notifyScheduling(projectID domain.ProjectID) {
+	if s.scheduling != nil && projectID != "" {
+		s.scheduling.Notify(projectID)
+	}
+}
+
+// projectIDFor reads a session's project id before a destructive operation, so
+// the scheduler can still be woken for the dependents afterwards.
+func (s *Service) projectIDFor(ctx context.Context, id domain.SessionID) domain.ProjectID {
+	rec, found, err := s.store.GetSession(ctx, id)
+	if err != nil || !found {
+		return ""
+	}
+	return rec.ProjectID
 }
 
 // artifactDeleter deletes a session's artifact files and version rows. The

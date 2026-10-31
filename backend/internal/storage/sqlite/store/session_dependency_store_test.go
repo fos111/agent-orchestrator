@@ -175,6 +175,9 @@ func TestQueuedSessionAdmitLaunchAndCancelTransitions(t *testing.T) {
 	if err != nil || launched.SchedulingState != domain.SchedulingImmediate {
 		t.Fatalf("launched = %+v err=%v, want immediate", launched, err)
 	}
+	if launched.ProvisionState.WithDefault() != domain.SessionProvisionReady || launched.ProvisionError != "" {
+		t.Fatalf("launched provisioning = %q error=%q, want ready", launched.ProvisionState, launched.ProvisionError)
+	}
 
 	// Once admitted, the pre-launch cancel no longer applies: kill owns it.
 	if ok, err := s.CancelQueuedSession(ctx, created.ID, now); err != nil || ok {

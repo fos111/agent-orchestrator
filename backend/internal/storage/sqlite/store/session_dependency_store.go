@@ -217,7 +217,8 @@ func (s *Store) SetSessionAdmissionOverride(ctx context.Context, id domain.Sessi
 }
 
 // MarkSessionSchedulingLaunched turns an admitted row into an ordinary active
-// session after a successful launch.
+// session after a successful launch, finishing the provisioning the
+// reservation started.
 func (s *Store) MarkSessionSchedulingLaunched(ctx context.Context, id domain.SessionID, now time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -313,6 +314,17 @@ func (s *Store) ListAdmittedSessionsWithoutWorkspace(ctx context.Context, projec
 	rows, err := s.qr.ListAdmittedSessionsWithoutWorkspace(ctx, optionalProjectID(projectID))
 	if err != nil {
 		return nil, fmt.Errorf("list unlaunched admitted sessions for %s: %w", projectID, err)
+	}
+	return rows, nil
+}
+
+// ListAdmittedSessionsWithWorkspace returns admitted rows that already launched
+// but never committed the transition to an ordinary active session. Recovery
+// finishes that transition instead of launching them a second time.
+func (s *Store) ListAdmittedSessionsWithWorkspace(ctx context.Context, projectID domain.ProjectID) ([]domain.SessionID, error) {
+	rows, err := s.qr.ListAdmittedSessionsWithWorkspace(ctx, optionalProjectID(projectID))
+	if err != nil {
+		return nil, fmt.Errorf("list launched admitted sessions for %s: %w", projectID, err)
 	}
 	return rows, nil
 }

@@ -437,6 +437,18 @@ func (f *fakeStore) SetSessionPinned(_ context.Context, id domain.SessionID, isP
 	return true, nil
 }
 
+func (f *fakeStore) SetSessionCompleted(_ context.Context, id domain.SessionID, completedAt time.Time) (bool, error) {
+	r, ok := f.sessions[id]
+	if !ok || r.IsTerminated {
+		return false, nil
+	}
+	if r.CompletedAt == nil {
+		r.CompletedAt = &completedAt
+	}
+	f.sessions[id] = r
+	return true, nil
+}
+
 func (f *fakeStore) SetSessionPreviewURL(_ context.Context, id domain.SessionID, previewURL string, updatedAt time.Time) (bool, error) {
 	r, ok := f.sessions[id]
 	if !ok {

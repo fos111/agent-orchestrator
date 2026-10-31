@@ -126,6 +126,40 @@ func (q *Queries) InsertSessionDependency(ctx context.Context, arg InsertSession
 	return err
 }
 
+const listAdmittedSessionsWithWorkspace = `-- name: ListAdmittedSessionsWithWorkspace :many
+SELECT id FROM sessions
+WHERE project_id = ?
+  AND scheduling_state = 'admitted'
+  AND is_terminated = 0
+  AND (workspace_path <> '' OR runtime_handle_id <> '')
+ORDER BY admitted_at, id
+`
+
+// Crash recovery: an admitted row that already owns a workspace or runtime was
+// launched, but the transition to an ordinary active session never committed.
+func (q *Queries) ListAdmittedSessionsWithWorkspace(ctx context.Context, projectID *domain.ProjectID) ([]domain.SessionID, error) {
+	rows, err := q.db.QueryContext(ctx, listAdmittedSessionsWithWorkspace, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.SessionID{}
+	for rows.Next() {
+		var id domain.SessionID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAdmittedSessionsWithoutWorkspace = `-- name: ListAdmittedSessionsWithoutWorkspace :many
 SELECT id FROM sessions
 WHERE project_id = ?
@@ -367,6 +401,8 @@ const markSessionSchedulingLaunched = `-- name: MarkSessionSchedulingLaunched :e
 UPDATE sessions
 SET scheduling_state = 'immediate',
     blocked_reason = '',
+    provision_state = 'ready',
+    provision_error = '',
     updated_at = ?1
 WHERE id = ?2
   AND scheduling_state = 'admitted'
@@ -378,7 +414,8 @@ type MarkSessionSchedulingLaunchedParams struct {
 }
 
 // A successful launch leaves the admitted state and becomes an ordinary active
-// session. Guarded so a cancelled session is never resurrected.
+// session, so it also finishes the provisioning a reservation started.
+// Guarded so a cancelled session is never resurrected.
 func (q *Queries) MarkSessionSchedulingLaunched(ctx context.Context, arg MarkSessionSchedulingLaunchedParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, markSessionSchedulingLaunched, arg.UpdatedAt, arg.ID)
 	if err != nil {

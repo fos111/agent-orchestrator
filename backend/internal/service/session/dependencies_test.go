@@ -242,7 +242,9 @@ func TestSpawnWithDependenciesReservesThroughManager(t *testing.T) {
 		ID: "ao-2", ProjectID: "ao", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
 		SchedulingState: domain.SchedulingBlocked, BlockedReason: string(domain.BlockedDependencyPending),
 	}}
+	gate := &fakeSchedulingController{}
 	svc := NewWithDeps(Deps{Store: st, Manager: fc})
+	svc.SetSchedulingController(gate)
 	sess, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID:    "ao",
 		Kind:         domain.KindWorker,
@@ -261,5 +263,8 @@ func TestSpawnWithDependenciesReservesThroughManager(t *testing.T) {
 	}
 	if sess.SchedulingState != domain.SchedulingBlocked {
 		t.Fatalf("session scheduling = %s, want blocked", sess.SchedulingState)
+	}
+	if len(gate.notified) != 1 || gate.notified[0] != "ao" {
+		t.Fatalf("notified = %v, want one wake-up after the reservation", gate.notified)
 	}
 }

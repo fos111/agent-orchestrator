@@ -1,6 +1,7 @@
 package sessionmanager
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -159,5 +160,117 @@ func TestDecodeQueuedSpawnConfigRejectsUnknownVersion(t *testing.T) {
 	}
 	if _, err := decodeQueuedSpawnConfig(""); err == nil {
 		t.Fatal("empty config was accepted")
+	}
+}
+
+// A queued session owns no workspace and no controller, so kill must be a
+// single durable cancel: no workspace destroy, no runtime destroy, no shell
+// teardown.
+func TestKillQueuedSessionCancelsWithoutWorkspaceCleanup(t *testing.T) {
+	m, st, rt, ws := newManager()
+	rec, err := m.ReserveSpawn(ctx, queuedTestConfig("mer-0"))
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	freed, err := m.Kill(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if freed {
+		t.Fatal("killing a queued session freed a workspace it never owned")
+	}
+	got := st.sessions[rec.ID]
+	if !got.IsTerminated || got.SchedulingState != domain.SchedulingCancelled {
+		t.Fatalf("killed row = %+v, want terminated and cancelled", got)
+	}
+	if ws.destroyed != 0 || rt.destroyed != 0 {
+		t.Fatalf("workspace destroys = %d, runtime destroys = %d, want none", ws.destroyed, rt.destroyed)
+	}
+	if ws.createCount != 0 || rt.created != 0 {
+		t.Fatalf("workspace creates = %d, runtime creates = %d, want none", ws.createCount, rt.created)
+	}
+}
+
+// Killing an admitted row that already materialized is the ordinary teardown
+// path; the pre-launch short-circuit must not swallow it.
+func TestKillLaunchedSessionUsesWorkspaceTeardown(t *testing.T) {
+	m, st, rt, ws := newManager()
+	rec, err := m.ReserveSpawn(ctx, queuedTestConfig("mer-0"))
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	admitted := st.sessions[rec.ID]
+	admitted.SchedulingState = domain.SchedulingAdmitted
+	st.sessions[rec.ID] = admitted
+	if _, err := m.LaunchSpawn(ctx, rec.ID); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if _, err := m.Kill(ctx, rec.ID); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if ws.destroyed != 1 || rt.destroyed != 1 {
+		t.Fatalf("workspace destroys = %d, runtime destroys = %d, want one each", ws.destroyed, rt.destroyed)
+	}
+}
+
+// fakeLaunchReadiness records the launch-time readiness probe. It lets a test
+// flip a harness from installed to gone while the session sits in the queue.
+type fakeLaunchReadiness struct {
+	snapshot domain.AgentReadinessSnapshot
+	err      error
+	calls    int
+	agentID  string
+	purpose  domain.AgentReadinessPurpose
+}
+
+func (f *fakeLaunchReadiness) EnsureAgentReadiness(_ context.Context, agentID string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error) {
+	f.calls++
+	f.agentID = agentID
+	f.purpose = purpose
+	return f.snapshot, f.err
+}
+
+func (f *fakeLaunchReadiness) InvalidateAgentInstallation(string)   {}
+func (f *fakeLaunchReadiness) InvalidateAgentAuthentication(string) {}
+func (f *fakeLaunchReadiness) RecheckAgent(string)                  {}
+
+// A queued session must not launch with a harness that disappeared while it
+// waited: the reserve-time check is only fast feedback, launch is authoritative.
+func TestLaunchSpawnRechecksAgentReadiness(t *testing.T) {
+	m, st, rt, ws := newManager()
+	readiness := &fakeLaunchReadiness{snapshot: domain.AgentReadinessSnapshot{
+		Installation: domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled},
+	}}
+	m.SetAgentReadiness(readiness)
+	rec, err := m.ReserveSpawn(ctx, queuedTestConfig("mer-0"))
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	admitted := st.sessions[rec.ID]
+	admitted.SchedulingState = domain.SchedulingAdmitted
+	st.sessions[rec.ID] = admitted
+
+	// The harness is uninstalled while the row is admitted but not launched.
+	readiness.snapshot.Installation.State = domain.AgentInstallationNotInstalled
+	if _, err := m.LaunchSpawn(ctx, rec.ID); !errors.Is(err, ports.ErrAgentBinaryNotFound) {
+		t.Fatalf("launch error = %v, want ErrAgentBinaryNotFound", err)
+	}
+	if readiness.calls != 1 || readiness.agentID != string(domain.HarnessClaudeCode) || readiness.purpose != domain.AgentReadinessPurposeLaunch {
+		t.Fatalf("readiness probe = calls:%d agent:%q purpose:%q, want one launch probe for claude-code", readiness.calls, readiness.agentID, readiness.purpose)
+	}
+	if ws.createCount != 0 || rt.created != 0 {
+		t.Fatalf("workspace=%d runtime=%d, want none after a readiness failure", ws.createCount, rt.created)
+	}
+	if got := st.sessions[rec.ID]; got.SchedulingState != domain.SchedulingAdmitted {
+		t.Fatalf("scheduling state = %s, want the admitted row left for the scheduler to fail", got.SchedulingState)
+	}
+
+	// Reinstalling the harness lets the same admitted row launch.
+	readiness.snapshot.Installation.State = domain.AgentInstallationInstalled
+	if _, err := m.LaunchSpawn(ctx, rec.ID); err != nil {
+		t.Fatalf("launch after reinstall: %v", err)
+	}
+	if ws.createCount != 1 || rt.created != 1 {
+		t.Fatalf("workspace=%d runtime=%d, want one launch after reinstall", ws.createCount, rt.created)
 	}
 }
