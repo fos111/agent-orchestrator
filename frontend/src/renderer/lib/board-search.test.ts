@@ -6,6 +6,7 @@ import {
 	boardSearchWithEdges,
 	boardSearchWithLayout,
 	boardSearchWithRun,
+	boardSearchWithTeam,
 	boardSearchWithView,
 	validateBoardSearch,
 } from "./board-search";
@@ -184,5 +185,35 @@ describe("boardSearchWithView clearing graph filters", () => {
 				"board",
 			),
 		).toEqual({});
+	});
+});
+
+describe("team filter", () => {
+	it("accepts a non-empty team root and drops everything else", () => {
+		expect(validateBoardSearch({ team: "ao-1" })).toEqual({ team: "ao-1" });
+		expect(validateBoardSearch({ team: " ao-1 " })).toEqual({ team: "ao-1" });
+		expect(validateBoardSearch({ team: "" })).toEqual({});
+		expect(validateBoardSearch({ team: 1 })).toEqual({});
+	});
+
+	it("keeps the current view when a team filter is set", () => {
+		expect(boardSearchWithTeam({}, "ao-1")).toEqual({ team: "ao-1" });
+		expect(boardSearchWithTeam({ view: "graph", archived: true }, "ao-1")).toEqual({
+			view: "graph",
+			archived: true,
+			team: "ao-1",
+		});
+		expect(boardSearchWithTeam({ view: "graph", team: "ao-1" }, undefined)).toEqual({
+			view: "graph",
+		});
+	});
+
+	it("survives a switch from the graph to the board, which a run filter does not", () => {
+		expect(boardSearchWithView({ view: "graph", team: "ao-1" }, "board")).toEqual({
+			team: "ao-1",
+		});
+		expect(
+			boardSearchWithView({ view: "graph", team: "ao-1", run: "dag-1" }, "board"),
+		).toEqual({ team: "ao-1" });
 	});
 });

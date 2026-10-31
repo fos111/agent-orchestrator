@@ -793,6 +793,58 @@ func TestReconcileReleasesTeamLimitWhenWorkerTerminates(t *testing.T) {
 	}
 }
 
+func TestReconcileTeamLimitsAreIndependentPerTeam(t *testing.T) {
+	st := newFakeStore()
+	base := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	seedProject(st, "ao", domain.SchedulingConfig{MaxActivePerTeam: 1})
+	seedOrchestrator(st, "ao-1", "ao", base)
+	seedOrchestrator(st, "ao-2", "ao", base.Add(time.Second))
+	seedActiveWorker(st, "ao-1-a", "ao-1", "ao", base.Add(time.Minute))
+	seedQueuedWorker(st, "ao-1-b", "ao-1", "ao", base.Add(2*time.Minute))
+	// The second team has a free slot even though the first team is full.
+	seedQueuedWorker(st, "ao-2-a", "ao-2", "ao", base.Add(3*time.Minute))
+	sched := newScheduler(st, &fakeLauncher{}, nil)
+
+	res, err := sched.Reconcile(context.Background(), "ao")
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(res.Admitted) != 1 || res.Admitted[0] != "ao-2-a" {
+		t.Fatalf("admitted = %v, want [ao-2-a]", res.Admitted)
+	}
+	if got := st.sessions["ao-1-b"]; got.SchedulingState != domain.SchedulingBlocked || got.BlockedReason != string(domain.BlockedTeamLimit) {
+		t.Fatalf("ao-1-b = %+v, want blocked(team_limit)", got)
+	}
+	if got := st.sessions["ao-1-a"]; got.SchedulingState != domain.SchedulingImmediate {
+		t.Fatalf("running worker ao-1-a = %s, want untouched", got.SchedulingState)
+	}
+}
+
+func TestReconcileNestedOrchestratorRunsItsOwnTeamLimit(t *testing.T) {
+	st := newFakeStore()
+	base := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	seedProject(st, "ao", domain.SchedulingConfig{MaxActivePerTeam: 1})
+	seedOrchestrator(st, "ao-1", "ao", base)
+	seedActiveWorker(st, "ao-1-w", "ao-1", "ao", base.Add(time.Minute))
+	// A nested orchestrator is a lead, not a worker of the outer team, so the
+	// outer team's full slot count must not block the inner team's first worker.
+	seedOrchestrator(st, "ao-2", "ao", base.Add(2*time.Minute))
+	stWorker := st.sessions["ao-2"]
+	stWorker.ParentSessionID = "ao-1"
+	stWorker.CreatedAt = base.Add(2 * time.Minute)
+	st.sessions["ao-2"] = stWorker
+	seedQueuedWorker(st, "ao-2-w", "ao-2", "ao", base.Add(3*time.Minute))
+	sched := newScheduler(st, &fakeLauncher{}, nil)
+
+	res, err := sched.Reconcile(context.Background(), "ao")
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(res.Admitted) != 1 || res.Admitted[0] != "ao-2-w" {
+		t.Fatalf("admitted = %v, want [ao-2-w]", res.Admitted)
+	}
+}
+
 func TestReconcileTeamLimitSkipsStandaloneWorkers(t *testing.T) {
 	st := newFakeStore()
 	base := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)

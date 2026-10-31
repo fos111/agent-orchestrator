@@ -307,6 +307,43 @@ describe("app i18next instance", () => {
 		}
 	});
 
+	it("resolves every team label in every locale", () => {
+		const teamKeys = [
+			"shell.team",
+			"shell.teamHeaderAria",
+			"shell.teamActiveLimit",
+			"shell.teamUnlimited",
+			"shell.teamMessage",
+			"shell.teamClear",
+			"shell.teamPanelAria",
+			"shell.teamPanelTitle",
+			"shell.teamPanelClose",
+			"shell.teamMembersAria",
+			"shell.teamMembersEmpty",
+			"shell.teamLead",
+			"shell.teamComposerLabel",
+			"shell.teamComposerPlaceholder",
+			"shell.teamComposerSend",
+			"shell.teamComposerSending",
+			"shell.teamMessageSent",
+			"shell.teamMessageFailed",
+			"shell.teamView",
+			"shell.teamLoading",
+			"shell.teamUnavailable",
+		] as const;
+		for (const locale of APP_LOCALES) {
+			const i18n = createAppI18n(locale);
+			for (const key of teamKeys) {
+				const value = i18n.t(key, { active: 2, max: 4, delivered: 2, failed: 1 });
+				expect(value, `${locale}.${key}`).toBeTruthy();
+				expect(value, `${locale}.${key}`).not.toBe(key);
+			}
+			// The member count is a plural base; one and many must both resolve.
+			expect(i18n.t("shell.teamMemberCount", { count: 1 }), `${locale} singular member count`).toContain("1");
+			expect(i18n.t("shell.teamMemberCount", { count: 3 }), `${locale} plural member count`).toContain("3");
+		}
+	});
+
 	it("keeps interpolation variables aligned between locales", () => {
 		const variables = (message: string | string[]) => {
 			const msgs = Array.isArray(message) ? message : [message];
