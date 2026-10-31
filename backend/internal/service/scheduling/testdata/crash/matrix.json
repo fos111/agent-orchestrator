@@ -1,0 +1,652 @@
+{
+  "cases": [
+    {
+      "id": "reservation-committed-dependency-pending",
+      "phase": "reserve",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "pending",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A reservation is durable before it owns a workspace. Recovery re-evaluates the edge; a dependency that has not reached its required state leaves the row blocked with no launch."
+    },
+    {
+      "id": "dependency-satisfied-before-recovery",
+      "phase": "evaluate",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": true,
+        "launchAttempted": true,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "The dependency reached its required state while the daemon was down. Boot reconcile moves the row to queued, admits it, and launches it."
+    },
+    {
+      "id": "queued-free-slot",
+      "phase": "admit",
+      "before": {
+        "schedulingState": "queued",
+        "blockedReason": "",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": true,
+        "launchAttempted": true,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A queued row whose dependencies are satisfied and whose limits have room is admitted and launched by the next reconcile."
+    },
+    {
+      "id": "project-full-stays-blocked",
+      "phase": "admit",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "project_limit",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": true,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "project_limit",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "The project is still at maxActiveSessions, so the candidate is re-marked blocked(project_limit) instead of queued."
+    },
+    {
+      "id": "team-full-stays-blocked",
+      "phase": "admit",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "team_limit",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": true,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "team_limit",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "The team already has maxActivePerTeam active workers. Existing workers keep running and the candidate waits."
+    },
+    {
+      "id": "dependency-satisfied-but-project-full",
+      "phase": "evaluate",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": true,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "project_limit",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "Satisfied dependencies do not bypass a full project. The limit reason is the one a person must act on."
+    },
+    {
+      "id": "dependency-satisfied-but-team-full",
+      "phase": "evaluate",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": true,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "team_limit",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A satisfied dependency still waits when its team is at the worker limit."
+    },
+    {
+      "id": "dependency-failed-while-down",
+      "phase": "evaluate",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "failed",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_failed",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A dependency terminated without a success fact. The dependent becomes blocked(dependency_failed) and is not cancelled."
+    },
+    {
+      "id": "dependency-cancelled-while-down",
+      "phase": "evaluate",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "cancelled",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_cancelled",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A cancelled dependency blocks its dependents; it does not cancel them."
+    },
+    {
+      "id": "dependency-missing-while-down",
+      "phase": "evaluate",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "missing",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_missing",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "The dependency row no longer exists, so the edge can never be satisfied without user action."
+    },
+    {
+      "id": "dependency-unsatisfiable-while-down",
+      "phase": "evaluate",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "unsatisfiable",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_unsatisfiable",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A merged gate on a dependency that has no pull request and cannot open one is permanently unsatisfiable."
+    },
+    {
+      "id": "dependency-invalid-required-state",
+      "phase": "evaluate",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "invalid",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "invalid",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A stored edge with an unknown required state reports blocked(invalid) rather than being guessed into a satisfiable state."
+    },
+    {
+      "id": "admitted-never-launched",
+      "phase": "admit",
+      "before": {
+        "schedulingState": "admitted",
+        "blockedReason": "",
+        "provisionState": "provisioning",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": true,
+        "launchAttempted": true,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "Admission is committed before provisioning. An admitted row with no workspace and no runtime is relaunched under the per-session launch lock."
+    },
+    {
+      "id": "admitted-workspace-only",
+      "phase": "launch",
+      "before": {
+        "schedulingState": "admitted",
+        "blockedReason": "",
+        "provisionState": "provisioning",
+        "hasWorkspace": true,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A workspace proves a launch already started. Recovery finishes the admitted-to-immediate transition instead of building a second workspace."
+    },
+    {
+      "id": "admitted-runtime-only",
+      "phase": "launch",
+      "before": {
+        "schedulingState": "admitted",
+        "blockedReason": "",
+        "provisionState": "provisioning",
+        "hasWorkspace": false,
+        "hasRuntime": true,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A runtime handle proves a launch already started. Recovery finishes the transition without relaunching."
+    },
+    {
+      "id": "admitted-workspace-and-runtime",
+      "phase": "launch",
+      "before": {
+        "schedulingState": "admitted",
+        "blockedReason": "",
+        "provisionState": "provisioning",
+        "hasWorkspace": true,
+        "hasRuntime": true,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "Both launch facts exist, so recovery only completes the durable scheduling transition."
+    },
+    {
+      "id": "admitted-launch-fails-during-recovery",
+      "phase": "launch",
+      "before": {
+        "schedulingState": "admitted",
+        "blockedReason": "",
+        "provisionState": "provisioning",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "failed"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "launch_failed",
+        "provisionState": "failed",
+        "launched": false,
+        "launchAttempted": true,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A launch error is recorded as blocked(launch_failed) with a provision error. It is not retried automatically."
+    },
+    {
+      "id": "launch-failed-not-retried",
+      "phase": "launch",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "launch_failed",
+        "provisionState": "failed",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "failed"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "launch_failed",
+        "provisionState": "failed",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "The candidate query excludes launch failures, so a restart leaves the row blocked until a person retries it."
+    },
+    {
+      "id": "launch-failed-user-admit",
+      "phase": "recover",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "launch_failed",
+        "provisionState": "failed",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "failed"
+      },
+      "recovery": "admit",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": true,
+        "launchAttempted": true,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A plain admit re-evaluates a launch failure from the queue and retries the launch without recording an override."
+    },
+    {
+      "id": "launch-failed-force-admit",
+      "phase": "recover",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "launch_failed",
+        "provisionState": "failed",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "pending",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "failed"
+      },
+      "recovery": "force_admit",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": true,
+        "launchAttempted": true,
+        "isTerminated": false,
+        "admissionOverride": true
+      },
+      "why": "Force admit bypasses the pending dependency and the failed launch, and records admissionOverride."
+    },
+    {
+      "id": "cancelled-before-launch",
+      "phase": "cancel",
+      "before": {
+        "schedulingState": "cancelled",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": true,
+        "dependencyFact": "satisfied",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "cancelled",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": true,
+        "admissionOverride": false
+      },
+      "why": "A cancelled pre-launch row is terminated and excluded from recovery, so a restart cannot launch it."
+    },
+    {
+      "id": "blocked-force-admit-bypasses-pending",
+      "phase": "admit",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "pending",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "force_admit",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": true,
+        "launchAttempted": true,
+        "isTerminated": false,
+        "admissionOverride": true
+      },
+      "why": "A forced admit bypasses dependencies and limits, launches the row, and marks the session with an admission override."
+    },
+    {
+      "id": "blocked-admit-without-force-stays-blocked",
+      "phase": "admit",
+      "before": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "hasWorkspace": false,
+        "hasRuntime": false,
+        "isTerminated": false,
+        "dependencyFact": "pending",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "not_attempted"
+      },
+      "recovery": "admit",
+      "expected": {
+        "schedulingState": "blocked",
+        "blockedReason": "dependency_pending",
+        "provisionState": "queued",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "A plain admit re-evaluates the same edge and exits with the blocking reason instead of launching."
+    },
+    {
+      "id": "immediate-session-untouched",
+      "phase": "recover",
+      "before": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "hasWorkspace": true,
+        "hasRuntime": true,
+        "isTerminated": false,
+        "dependencyFact": "none",
+        "projectFull": false,
+        "teamFull": false,
+        "launchResult": "succeeded"
+      },
+      "recovery": "boot",
+      "expected": {
+        "schedulingState": "immediate",
+        "blockedReason": "",
+        "provisionState": "ready",
+        "launched": false,
+        "launchAttempted": false,
+        "isTerminated": false,
+        "admissionOverride": false
+      },
+      "why": "An ordinary active session is not a scheduling candidate; recovery leaves it alone."
+    }
+  ]
+}

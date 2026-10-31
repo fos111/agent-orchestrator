@@ -1,0 +1,612 @@
+{
+  "name": "load-64-nodes",
+  "nodes": [
+    {
+      "id": "node-00",
+      "name": "DAG load node 00",
+      "prompt": "Exercise the DAG load fixture as node 00."
+    },
+    {
+      "id": "node-01",
+      "name": "DAG load node 01",
+      "prompt": "Exercise the DAG load fixture as node 01."
+    },
+    {
+      "id": "node-02",
+      "name": "DAG load node 02",
+      "prompt": "Exercise the DAG load fixture as node 02."
+    },
+    {
+      "id": "node-03",
+      "name": "DAG load node 03",
+      "prompt": "Exercise the DAG load fixture as node 03."
+    },
+    {
+      "id": "node-04",
+      "name": "DAG load node 04",
+      "prompt": "Exercise the DAG load fixture as node 04."
+    },
+    {
+      "id": "node-05",
+      "name": "DAG load node 05",
+      "prompt": "Exercise the DAG load fixture as node 05."
+    },
+    {
+      "id": "node-06",
+      "name": "DAG load node 06",
+      "prompt": "Exercise the DAG load fixture as node 06."
+    },
+    {
+      "id": "node-07",
+      "name": "DAG load node 07",
+      "prompt": "Exercise the DAG load fixture as node 07."
+    },
+    {
+      "id": "node-08",
+      "name": "DAG load node 08",
+      "prompt": "Exercise the DAG load fixture as node 08.",
+      "dependsOn": [
+        "node-00"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-09",
+      "name": "DAG load node 09",
+      "prompt": "Exercise the DAG load fixture as node 09.",
+      "dependsOn": [
+        "node-00",
+        "node-01"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-10",
+      "name": "DAG load node 10",
+      "prompt": "Exercise the DAG load fixture as node 10.",
+      "dependsOn": [
+        "node-01",
+        "node-02"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-11",
+      "name": "DAG load node 11",
+      "prompt": "Exercise the DAG load fixture as node 11.",
+      "dependsOn": [
+        "node-02",
+        "node-03"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-12",
+      "name": "DAG load node 12",
+      "prompt": "Exercise the DAG load fixture as node 12.",
+      "dependsOn": [
+        "node-03",
+        "node-04"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-13",
+      "name": "DAG load node 13",
+      "prompt": "Exercise the DAG load fixture as node 13.",
+      "dependsOn": [
+        "node-04",
+        "node-05"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-14",
+      "name": "DAG load node 14",
+      "prompt": "Exercise the DAG load fixture as node 14.",
+      "dependsOn": [
+        "node-05",
+        "node-06"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-15",
+      "name": "DAG load node 15",
+      "prompt": "Exercise the DAG load fixture as node 15.",
+      "dependsOn": [
+        "node-06",
+        "node-07"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-16",
+      "name": "DAG load node 16",
+      "prompt": "Exercise the DAG load fixture as node 16.",
+      "dependsOn": [
+        "node-07",
+        "node-08"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-17",
+      "name": "DAG load node 17",
+      "prompt": "Exercise the DAG load fixture as node 17.",
+      "dependsOn": [
+        "node-08",
+        "node-09"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-18",
+      "name": "DAG load node 18",
+      "prompt": "Exercise the DAG load fixture as node 18.",
+      "dependsOn": [
+        "node-09",
+        "node-10"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-19",
+      "name": "DAG load node 19",
+      "prompt": "Exercise the DAG load fixture as node 19.",
+      "dependsOn": [
+        "node-10",
+        "node-11"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-20",
+      "name": "DAG load node 20",
+      "prompt": "Exercise the DAG load fixture as node 20.",
+      "dependsOn": [
+        "node-11",
+        "node-12"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-21",
+      "name": "DAG load node 21",
+      "prompt": "Exercise the DAG load fixture as node 21.",
+      "dependsOn": [
+        "node-12",
+        "node-13"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-22",
+      "name": "DAG load node 22",
+      "prompt": "Exercise the DAG load fixture as node 22.",
+      "dependsOn": [
+        "node-13",
+        "node-14"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-23",
+      "name": "DAG load node 23",
+      "prompt": "Exercise the DAG load fixture as node 23.",
+      "dependsOn": [
+        "node-14",
+        "node-15"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-24",
+      "name": "DAG load node 24",
+      "prompt": "Exercise the DAG load fixture as node 24.",
+      "dependsOn": [
+        "node-15",
+        "node-16"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-25",
+      "name": "DAG load node 25",
+      "prompt": "Exercise the DAG load fixture as node 25.",
+      "dependsOn": [
+        "node-16",
+        "node-17"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-26",
+      "name": "DAG load node 26",
+      "prompt": "Exercise the DAG load fixture as node 26.",
+      "dependsOn": [
+        "node-17",
+        "node-18"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-27",
+      "name": "DAG load node 27",
+      "prompt": "Exercise the DAG load fixture as node 27.",
+      "dependsOn": [
+        "node-18",
+        "node-19"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-28",
+      "name": "DAG load node 28",
+      "prompt": "Exercise the DAG load fixture as node 28.",
+      "dependsOn": [
+        "node-19",
+        "node-20"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-29",
+      "name": "DAG load node 29",
+      "prompt": "Exercise the DAG load fixture as node 29.",
+      "dependsOn": [
+        "node-20",
+        "node-21"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-30",
+      "name": "DAG load node 30",
+      "prompt": "Exercise the DAG load fixture as node 30.",
+      "dependsOn": [
+        "node-21",
+        "node-22"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-31",
+      "name": "DAG load node 31",
+      "prompt": "Exercise the DAG load fixture as node 31.",
+      "dependsOn": [
+        "node-22",
+        "node-23"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-32",
+      "name": "DAG load node 32",
+      "prompt": "Exercise the DAG load fixture as node 32.",
+      "dependsOn": [
+        "node-23",
+        "node-24"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-33",
+      "name": "DAG load node 33",
+      "prompt": "Exercise the DAG load fixture as node 33.",
+      "dependsOn": [
+        "node-24",
+        "node-25"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-34",
+      "name": "DAG load node 34",
+      "prompt": "Exercise the DAG load fixture as node 34.",
+      "dependsOn": [
+        "node-25",
+        "node-26"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-35",
+      "name": "DAG load node 35",
+      "prompt": "Exercise the DAG load fixture as node 35.",
+      "dependsOn": [
+        "node-26",
+        "node-27"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-36",
+      "name": "DAG load node 36",
+      "prompt": "Exercise the DAG load fixture as node 36.",
+      "dependsOn": [
+        "node-27",
+        "node-28"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-37",
+      "name": "DAG load node 37",
+      "prompt": "Exercise the DAG load fixture as node 37.",
+      "dependsOn": [
+        "node-28",
+        "node-29"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-38",
+      "name": "DAG load node 38",
+      "prompt": "Exercise the DAG load fixture as node 38.",
+      "dependsOn": [
+        "node-29",
+        "node-30"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-39",
+      "name": "DAG load node 39",
+      "prompt": "Exercise the DAG load fixture as node 39.",
+      "dependsOn": [
+        "node-30",
+        "node-31"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-40",
+      "name": "DAG load node 40",
+      "prompt": "Exercise the DAG load fixture as node 40.",
+      "dependsOn": [
+        "node-31",
+        "node-32"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-41",
+      "name": "DAG load node 41",
+      "prompt": "Exercise the DAG load fixture as node 41.",
+      "dependsOn": [
+        "node-32",
+        "node-33"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-42",
+      "name": "DAG load node 42",
+      "prompt": "Exercise the DAG load fixture as node 42.",
+      "dependsOn": [
+        "node-33",
+        "node-34"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-43",
+      "name": "DAG load node 43",
+      "prompt": "Exercise the DAG load fixture as node 43.",
+      "dependsOn": [
+        "node-34",
+        "node-35"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-44",
+      "name": "DAG load node 44",
+      "prompt": "Exercise the DAG load fixture as node 44.",
+      "dependsOn": [
+        "node-35",
+        "node-36"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-45",
+      "name": "DAG load node 45",
+      "prompt": "Exercise the DAG load fixture as node 45.",
+      "dependsOn": [
+        "node-36",
+        "node-37"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-46",
+      "name": "DAG load node 46",
+      "prompt": "Exercise the DAG load fixture as node 46.",
+      "dependsOn": [
+        "node-37",
+        "node-38"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-47",
+      "name": "DAG load node 47",
+      "prompt": "Exercise the DAG load fixture as node 47.",
+      "dependsOn": [
+        "node-38",
+        "node-39"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-48",
+      "name": "DAG load node 48",
+      "prompt": "Exercise the DAG load fixture as node 48.",
+      "dependsOn": [
+        "node-39",
+        "node-40"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-49",
+      "name": "DAG load node 49",
+      "prompt": "Exercise the DAG load fixture as node 49.",
+      "dependsOn": [
+        "node-40",
+        "node-41"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-50",
+      "name": "DAG load node 50",
+      "prompt": "Exercise the DAG load fixture as node 50.",
+      "dependsOn": [
+        "node-41",
+        "node-42"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-51",
+      "name": "DAG load node 51",
+      "prompt": "Exercise the DAG load fixture as node 51.",
+      "dependsOn": [
+        "node-42",
+        "node-43"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-52",
+      "name": "DAG load node 52",
+      "prompt": "Exercise the DAG load fixture as node 52.",
+      "dependsOn": [
+        "node-43",
+        "node-44"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-53",
+      "name": "DAG load node 53",
+      "prompt": "Exercise the DAG load fixture as node 53.",
+      "dependsOn": [
+        "node-44",
+        "node-45"
+      ],
+      "requiredState": "merged"
+    },
+    {
+      "id": "node-54",
+      "name": "DAG load node 54",
+      "prompt": "Exercise the DAG load fixture as node 54.",
+      "dependsOn": [
+        "node-45",
+        "node-46"
+      ],
+      "requiredState": "ready"
+    },
+    {
+      "id": "node-55",
+      "name": "DAG load node 55",
+      "prompt": "Exercise the DAG load fixture as node 55.",
+      "dependsOn": [
+        "node-46",
+        "node-47"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-56",
+      "name": "DAG load node 56",
+      "prompt": "Exercise the DAG load fixture as node 56.",
+      "requestedOutput": "artifact",
+      "dependsOn": [
+        "node-47",
+        "node-48"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-57",
+      "name": "DAG load node 57",
+      "prompt": "Exercise the DAG load fixture as node 57.",
+      "requestedOutput": "artifact",
+      "dependsOn": [
+        "node-48",
+        "node-49"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-58",
+      "name": "DAG load node 58",
+      "prompt": "Exercise the DAG load fixture as node 58.",
+      "requestedOutput": "artifact",
+      "dependsOn": [
+        "node-49",
+        "node-50"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-59",
+      "name": "DAG load node 59",
+      "prompt": "Exercise the DAG load fixture as node 59.",
+      "requestedOutput": "artifact",
+      "dependsOn": [
+        "node-50",
+        "node-51"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-60",
+      "name": "DAG load node 60",
+      "prompt": "Exercise the DAG load fixture as node 60.",
+      "requestedOutput": "artifact",
+      "dependsOn": [
+        "node-51",
+        "node-52"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-61",
+      "name": "DAG load node 61",
+      "prompt": "Exercise the DAG load fixture as node 61.",
+      "requestedOutput": "artifact",
+      "dependsOn": [
+        "node-52",
+        "node-53"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-62",
+      "name": "DAG load node 62",
+      "prompt": "Exercise the DAG load fixture as node 62.",
+      "requestedOutput": "artifact",
+      "dependsOn": [
+        "node-53",
+        "node-54"
+      ],
+      "requiredState": "completed"
+    },
+    {
+      "id": "node-63",
+      "name": "DAG load node 63",
+      "prompt": "Exercise the DAG load fixture as node 63.",
+      "requestedOutput": "artifact",
+      "dependsOn": [
+        "node-54",
+        "node-55"
+      ],
+      "requiredState": "completed"
+    }
+  ]
+}

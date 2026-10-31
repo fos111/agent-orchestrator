@@ -16,10 +16,11 @@ ao
 ├── agent ls                      List built-in agent adapters and readiness
 ├── project                       add, ls, get, set-config, rm
 ├── spawn                         Create a worker or orchestrator session
-├── session                       ls, get, kill, admit, complete, restore, rename,
-│                                 cleanup, claim-pr, exit-agent, resume-agent
+├── session                       ls, top, get, kill, admit, complete, restore,
+│                                 rename, cleanup, claim-pr, exit-agent,
+│                                 resume-agent, history
 ├── dag                           run, status, cancel
-├── team                          ls, status, message
+├── team (alias: teams)           ls (alias: list), status, message
 ├── automation                    create, list, get, update, delete, runs
 ├── cue                           create, list
 ├── report                        Report worker progress or artifacts
@@ -130,30 +131,32 @@ Important flags include:
 | `--tracker-provider github\|gitlab` | Select the issue provider for `--issue`. |
 | `--issue <id>` | Associate a tracker issue. |
 | `--claim-pr <ref>` | Claim an existing pull request after spawning. |
-| `--depends-on <session-id>` | Repeatable dependency on a worker session in the same project. The session queues instead of starting immediately. |
-| `--dependency-state ready\|merged\|completed` | Required state for the dependencies. Defaults to each dependency's output type. |
+| `--depends-on <session-id>` | Repeatable dependency on a worker session in the same project. The session queues instead of starting immediately. Not valid with `--claim-pr` or `--kind orchestrator`. |
+| `--dependency-state ready\|merged\|completed` | Required state for every dependency. Defaults to the project's `defaultDependencyState` (`auto`), which uses each dependency's output type. |
 | `--no-takeover` | Refuse a PR already owned by another active session. |
 | `--skip-agent-check` | Skip only the CLI-side install/auth preflight. |
 
 Orchestrator chooses a project in this order: `--project`, `AO_PROJECT_ID`, the project for `AO_SESSION_ID`, then the closest registered project containing the current directory. Before spawning, Orchestrator refreshes the selected agent's readiness unless you use `--skip-agent-check`. Readiness is advisory.
 
-A spawn with `--depends-on` reserves the session without a workspace or terminal and shows it in the board's queue strip until its dependencies are satisfied and it is admitted. Standalone workers and orchestrators reject dependencies; use a [DAG run](/guides/scheduling#dag-runs) for a top-level graph.
+A spawn with `--depends-on` reserves the session without a workspace or terminal and shows it in the board's queue strip until its dependencies are satisfied and it is admitted. Projectless `--standalone` workers and orchestrators reject dependencies. A worker in a registered project does not need an orchestrator ancestor to depend on another session; use a [DAG run](/guides/scheduling#dag-runs) when one submission should create the whole graph.
 
 ### `ao session`
 
 | Command | Purpose |
 | --- | --- |
 | `ao session ls` | List active worker sessions. Use `--all` for orchestrators and `--include-terminated` for history. |
+| `ao session top` | Show resident memory per live session, largest first; supports `--all` and `--json`. |
 | `ao session get <id>` | Show one session. |
 | `ao session kill <id>` | Terminate a session. Dirty workspaces are preserved. A queued or blocked session is cancelled without workspace cleanup. |
 | `ao session admit <id>` | Re-evaluate a blocked session; `--force` bypasses dependencies and limits and records an override. |
-| `ao session complete <id>` | Mark an artifact or no-pull-request session complete. Supports `--note`; idempotent. |
+| `ao session complete <id>` | Mark an artifact or no-pull-request session complete; idempotent. `--note` is echoed in the confirmation only and is not stored. |
 | `ao session restore <id>` | Relaunch a terminated session when recovery is supported. |
 | `ao session exit-agent <id>` | Stop the controller while retaining the session. |
 | `ao session resume-agent <id>` | Start the controller again in that session. |
 | `ao session rename <id> <name>` | Change its display name. The project orchestrator cannot be renamed. |
 | `ao session cleanup` | Reclaim eligible terminated workspaces; supports `--dry-run`. |
 | `ao session claim-pr [<session-id>] <pr-ref>` | Attach an existing PR; omitting the session uses `AO_SESSION_ID`. |
+| `ao session history [<id>]` | Print a session's turns newest first; defaults to `AO_SESSION_ID` and accepts `--offset` and `--limit`. |
 
 Most lookup commands accept `--project` to disambiguate a session ID.
 
@@ -183,20 +186,20 @@ Submits and inspects DAG runs, which create related worker sessions atomically.
 
 | Command | Purpose |
 | --- | --- |
-| `ao dag run --project <id> --file <path>` | Validate and create every node in one transaction. Nodes start non-admitted and follow their dependencies. |
-| `ao dag status <dag-run-id>` | Show the derived run status and its nodes. |
-| `ao dag cancel <dag-run-id>` | Cancel queued and blocked nodes. Active nodes keep running unless active nodes are included. |
+| `ao dag run --project <id> --file <path>` | Validate and create every node in one transaction. Nodes start non-admitted and follow their dependencies. `--file -` reads stdin; `--json` prints the run. |
+| `ao dag status <dag-run-id>` | Show the derived run status and its nodes; supports `--json`. |
+| `ao dag cancel <dag-run-id>` | Cancel queued and blocked nodes. Active nodes keep running unless you pass `--include-active`; supports `--json`. |
 
 A run accepts up to `maxDagNodesPerRun` nodes, 64 by default. Run status is derived as `pending`, `running`, `completed`, `failed`, or `cancelled`; there is no pause, resume, or in-place retry. See [DAG runs](/guides/scheduling#dag-runs).
 
 ### `ao team`
 
-Teams are derived from the orchestrator subtree, so there is no create command.
+Teams are derived from the orchestrator subtree, so there is no create command. `ao team` also answers to `ao teams`, and every subcommand supports `--json`.
 
 | Command | Purpose |
 | --- | --- |
-| `ao team ls --project <id>` | List derived teams in a project. |
-| `ao team status <root-session-id>` | Show members, queue state, and limit usage. |
+| `ao team ls --project <id>` | List derived teams in a project. Alias: `ao team list`. |
+| `ao team status <root-session-id>` | Show the lead, non-terminated members, and active-worker usage against the limit. |
 | `ao team message <root-session-id> <message>` | Broadcast to every non-terminated member except the sender and report per-member delivery. |
 
 The team limit counts active workers only; the orchestrator is exempt. See [Teams](/guides/scheduling#teams).
