@@ -1163,7 +1163,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		rec = prep.record
 	} else {
 		seed := seedRecord(cfg, project.Config, m.clock())
-		if err := applySchedulingSeed(&seed, cfg, requestedMode, m.clock()); err != nil {
+		if err := applySchedulingSeed(&seed, cfg, requestedMode); err != nil {
 			return domain.SessionRecord{}, 0, 0, err
 		}
 		if mode == domain.SessionModeChat {
@@ -1746,7 +1746,7 @@ func (m *Manager) lockSessionLaunch(id domain.SessionID) func() {
 
 // applySchedulingSeed marks a dependency spawn as pre-launch and stores the
 // request the scheduler will launch. An immediate spawn is untouched.
-func applySchedulingSeed(seed *domain.SessionRecord, cfg ports.SpawnConfig, requestedMode domain.SessionMode, now time.Time) error {
+func applySchedulingSeed(seed *domain.SessionRecord, cfg ports.SpawnConfig, requestedMode domain.SessionMode) error {
 	if cfg.ResumeSessionID != "" || len(cfg.Dependencies) == 0 {
 		return nil
 	}

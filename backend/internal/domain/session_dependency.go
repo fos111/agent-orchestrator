@@ -169,6 +169,53 @@ type DependencySnapshot struct {
 	AllPRsMerged bool
 }
 
+// DependencySatisfied reports whether one dependency's derived facts satisfy an
+// edge, and names the reason when they do not. The scheduler and the session
+// read model share this policy so the board cannot disagree with admission.
+//
+// A hard failure outranks a pending edge: the caller reports the reason a
+// person must act on, not one that may still resolve itself.
+func DependencySatisfied(edge SessionDependency, dep DependencySnapshot) (bool, BlockedReason) {
+	if !dep.Found {
+		return false, BlockedDependencyMissing
+	}
+	if dep.SchedulingState.WithDefault() == SchedulingCancelled {
+		return false, BlockedDependencyCancelled
+	}
+	if dep.IsTerminated && !dep.Succeeded() {
+		return false, BlockedDependencyFailed
+	}
+	// A dependency that has not launched yet cannot have reached any required
+	// state; that is pending work, not a failure.
+	if dep.SchedulingState.IsPreLaunch() {
+		return false, BlockedDependencyPending
+	}
+	switch edge.RequiredState {
+	case DependencyReady:
+		if dep.KanbanColumn == KanbanReady {
+			return true, ""
+		}
+		return false, BlockedDependencyPending
+	case DependencyMerged:
+		if dep.PRCount == 0 && !dep.OutputType.HasPR() {
+			// The dependency can no longer open a PR, or never could; waiting
+			// will never satisfy this edge.
+			return false, BlockedDependencyUnsatisfiable
+		}
+		if dep.PRCount > 0 && dep.AllPRsMerged {
+			return true, ""
+		}
+		return false, BlockedDependencyPending
+	case DependencyCompleted:
+		if dep.CompletedAt != nil {
+			return true, ""
+		}
+		return false, BlockedDependencyPending
+	default:
+		return false, BlockedInvalid
+	}
+}
+
 // Succeeded reports whether a terminated dependency reached a success fact.
 // A termination without one is a failure, not a satisfied edge.
 func (s DependencySnapshot) Succeeded() bool {

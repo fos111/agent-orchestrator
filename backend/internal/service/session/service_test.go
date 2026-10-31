@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -374,6 +375,35 @@ func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.S
 // either side let a test build a cyclic graph the daemon could only inherit.
 func (f *fakeStore) ListSessionDependencies(_ context.Context, id domain.SessionID) ([]domain.SessionDependency, error) {
 	return append([]domain.SessionDependency(nil), f.dependencies[id]...), nil
+}
+
+// ListSessionDependenciesForSessions is the batch read-model form.
+func (f *fakeStore) ListSessionDependenciesForSessions(_ context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.SessionDependency, error) {
+	out := make(map[domain.SessionID][]domain.SessionDependency, len(ids))
+	for _, id := range ids {
+		out[id] = append([]domain.SessionDependency(nil), f.dependencies[id]...)
+	}
+	return out, nil
+}
+
+// ListDependentSessionIDsForSessions is the reverse lookup for the detail panel.
+func (f *fakeStore) ListDependentSessionIDsForSessions(_ context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.SessionID, error) {
+	wanted := make(map[domain.SessionID]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	out := make(map[domain.SessionID][]domain.SessionID)
+	for _, edges := range f.dependencies {
+		for _, edge := range edges {
+			if wanted[edge.DependsOnSessionID] {
+				out[edge.DependsOnSessionID] = append(out[edge.DependsOnSessionID], edge.SessionID)
+			}
+		}
+	}
+	for id := range out {
+		sort.Slice(out[id], func(i, j int) bool { return out[id][i] < out[id][j] })
+	}
+	return out, nil
 }
 
 func (f *fakeStore) GetSessionByClientRequestID(_ context.Context, id string) (domain.SessionRecord, bool, error) {

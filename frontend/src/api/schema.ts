@@ -2287,6 +2287,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/admit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admit a queued or blocked session now */
+        post: operations["admitSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/agent-browser/*": {
         parameters: {
             query?: never;
@@ -2488,6 +2505,23 @@ export interface paths {
         put?: never;
         /** Keep a viewed chat awake or release its view lease */
         post: operations["setSessionChatView"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record completion for an artifact or no-PR session */
+        post: operations["completeSession"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4462,6 +4496,9 @@ export interface components {
             path: string;
             projectId?: null | string;
         };
+        AdmitSessionRequest: {
+            force?: boolean;
+        };
         AgentAccountActivity: {
             currentStreakDays?: null | number;
             latestDay?: null | string;
@@ -5457,16 +5494,25 @@ export interface components {
         };
         ControllersSessionView: {
             activity: components["schemas"]["DomainActivity"];
+            admissionOverride?: boolean;
+            /** Format: date-time */
+            admittedAt?: null | string;
             artifactFiles?: components["schemas"]["SessionArtifact"][];
             autoInjectCI: boolean;
             autoInjectReview: boolean;
             autoReviewEnabled: boolean;
+            /** @description Why the session is blocked: dependency_pending, dependency_failed, dependency_cancelled, dependency_missing, dependency_cycle, dependency_unsatisfiable, project_limit, team_limit, launch_failed, or invalid. */
+            blockedReason?: string;
             branch?: string;
             branchNaming?: boolean;
             branchState?: components["schemas"]["SessionBranchState"];
             chatProviderPreserved: boolean;
             /** Format: date-time */
+            completedAt?: null | string;
+            /** Format: date-time */
             createdAt: string;
+            dependents?: string[];
+            dependsOn?: components["schemas"]["SessionDependencyStatus"][];
             displayName?: string;
             /** @enum {string} */
             displayStatus: "Working" | "Blocked" | "Exited" | "No signal" | "Interrupted" | "Awaiting PR" | "Fixing CI failures" | "Addressing comments" | "Needs review" | "Review scheduled" | "Reviewing" | "Review failed" | "Review pending" | "Draft" | "CI failing" | "Commented" | "Changes requested" | "Needs human review" | "Mergeable" | "Approved" | "Merged" | "Closed without merge" | "Terminated";
@@ -5500,7 +5546,7 @@ export interface components {
             projectId?: string;
             provisionError?: string;
             /** @enum {string} */
-            provisionState?: "provisioning" | "ready" | "failed";
+            provisionState?: "queued" | "provisioning" | "ready" | "failed";
             provisionSteps?: components["schemas"]["SessionProvisionStep"][];
             prs: components["schemas"]["SessionPRFacts"][];
             /** @enum {string} */
@@ -5508,6 +5554,8 @@ export interface components {
             reviewerConfig?: components["schemas"]["AgentConfig"];
             /** @enum {string} */
             reviewerHarness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "opencode-v2" | "kiro" | "pi" | "agy" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
+            /** @enum {string} */
+            schedulingState?: "immediate" | "queued" | "blocked" | "admitted" | "cancelled";
             /** @enum {string} */
             scmStatus?: "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "commented" | "approved" | "mergeable" | "merged";
             staleBinary?: components["schemas"]["SessionStaleBinary"];
@@ -6563,6 +6611,7 @@ export interface components {
             postCreate?: string[];
             preRemove?: string[];
             reviewers?: components["schemas"]["DomainReviewerConfig"][];
+            scheduling?: components["schemas"]["SchedulingConfig"];
             sessionPrefix?: string;
             symlinks?: string[];
             trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
@@ -6857,6 +6906,12 @@ export interface components {
             /** @description The file, relative to the session's artifact directory. */
             path: string;
         };
+        SchedulingConfig: {
+            defaultDependencyState?: string;
+            maxActivePerTeam?: number;
+            maxActiveSessions?: number;
+            maxDependenciesPerSession?: number;
+        };
         SendConversationMessageRequest: {
             attachments?: components["schemas"]["ConversationImageContentRequest"][];
             clientMessageId?: string;
@@ -6922,6 +6977,18 @@ export interface components {
             commits: number;
             remoteBranch?: string;
             unpushed: number;
+        };
+        SessionDependencyInput: {
+            /** @enum {string} */
+            requiredState?: "ready" | "merged" | "completed";
+            sessionId: string;
+        };
+        SessionDependencyStatus: {
+            dependencyState?: string;
+            /** @enum {string} */
+            requiredState: "ready" | "merged" | "completed";
+            satisfied: boolean;
+            sessionId: string;
         };
         SessionHistoryResponse: {
             offset: number;
@@ -7527,6 +7594,8 @@ export interface components {
             attachments?: components["schemas"]["AttachmentInput"][];
             branch?: string;
             clientRequestId?: string;
+            dependsOn?: components["schemas"]["SessionDependencyInput"][];
+            dependsOnSessionIds?: string[];
             displayName?: string;
             effort?: string;
             /** @enum {string} */
@@ -7542,6 +7611,8 @@ export interface components {
             prompt?: string;
             /** @enum {string} */
             requestedOutput?: "artifact";
+            /** @enum {string} */
+            requiredDependencyState?: "ready" | "merged" | "completed";
             /** @enum {string} */
             trackerProvider?: "github" | "gitlab";
         };
@@ -15920,6 +15991,60 @@ export interface operations {
             };
         };
     };
+    admitSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdmitSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     getSessionAgentBrowser: {
         parameters: {
             query?: never;
@@ -16771,6 +16896,56 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    completeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

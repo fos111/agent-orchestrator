@@ -317,7 +317,7 @@ func (s *Service) launchUnlaunchedAdmitted(ctx context.Context, projectID domain
 	}
 	for _, id := range ids {
 		if ctx.Err() != nil {
-			return nil
+			return ctx.Err()
 		}
 		if containsSession(res.Admitted, id) {
 			continue

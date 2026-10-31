@@ -1172,3 +1172,86 @@ func TestSpawnEffortSurfacesDaemonUnsupportedEffort(t *testing.T) {
 		t.Fatalf("err=%v, want daemon UNSUPPORTED_EFFORT envelope", err)
 	}
 }
+
+// TestSpawnDependencyFlags covers the flat dependency form the CLI sends: every
+// --depends-on id shares --dependency-state, and a queued/blocked spawn tells
+// the caller it will launch later instead of looking finished.
+func TestSpawnDependencyFlags(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var requests []string
+	var req spawnRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		appendPrimaryRequest(&requests, r)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+			_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","path":"/repo/demo"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure":
+			_, _ = io.WriteString(w, authorizedAgentsJSON("codex"))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-9","status":"queued","schedulingState":"blocked","blockedReason":"dependency_pending"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"spawn", "--project", "demo", "--agent", "codex", "--name", "worker",
+		"--depends-on", "ao-1", "--depends-on", "ao-2", "--dependency-state", "merged")
+	if err != nil {
+		t.Fatalf("spawn failed: %v stderr=%s", err, errOut)
+	}
+	if !reflect.DeepEqual(req.DependsOnSessionIds, []string{"ao-1", "ao-2"}) {
+		t.Fatalf("dependsOnSessionIds = %#v, want both ids in order", req.DependsOnSessionIds)
+	}
+	if req.RequiredDependencyState != "merged" {
+		t.Fatalf("requiredDependencyState = %q, want merged", req.RequiredDependencyState)
+	}
+	if !strings.Contains(out, "scheduling: blocked (dependency_pending)") {
+		t.Fatalf("output missing scheduling line:\n%s", out)
+	}
+}
+
+// TestSpawnDependencyFlagValidation rejects dependency flags that cannot mean
+// anything before the daemon is contacted.
+func TestSpawnDependencyFlagValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "state without depends-on",
+			args: []string{"spawn", "--project", "demo", "--name", "worker", "--dependency-state", "merged"},
+			want: "--dependency-state requires --depends-on",
+		},
+		{
+			name: "unknown state",
+			args: []string{"spawn", "--project", "demo", "--name", "worker", "--depends-on", "ao-1", "--dependency-state", "reviewed"},
+			want: "--dependency-state must be",
+		},
+		{
+			name: "orchestrator dependent",
+			args: []string{"spawn", "--project", "demo", "--name", "worker", "--kind", "orchestrator", "--depends-on", "ao-1"},
+			want: "--depends-on is supported for worker sessions only",
+		},
+		{
+			name: "claim-pr dependent",
+			args: []string{"spawn", "--project", "demo", "--name", "worker", "--depends-on", "ao-1", "--claim-pr", "142"},
+			want: "--depends-on cannot be combined with --claim-pr",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := executeCLI(t, Deps{}, tt.args...)
+			if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err=%v exit=%d, want %q", err, ExitCode(err), tt.want)
+			}
+		})
+	}
+}

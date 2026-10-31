@@ -63,6 +63,23 @@ type sessionDTO struct {
 	BranchState  *branchStateDTO `json:"branchState,omitempty"`
 	PRs          []sessionPRDTO  `json:"prs"`
 	Mode         string          `json:"mode,omitempty"`
+	// Scheduling facts are omitted by a pre-scheduling daemon; the CLI renders
+	// them only when present.
+	SchedulingState   string                    `json:"schedulingState,omitempty"`
+	BlockedReason     string                    `json:"blockedReason,omitempty"`
+	CompletedAt       *time.Time                `json:"completedAt,omitempty"`
+	AdmittedAt        *time.Time                `json:"admittedAt,omitempty"`
+	AdmissionOverride bool                      `json:"admissionOverride,omitempty"`
+	DependsOn         []sessionDependencyStatus `json:"dependsOn,omitempty"`
+	Dependents        []string                  `json:"dependents,omitempty"`
+}
+
+// sessionDependencyStatus mirrors one derived incoming dependency edge.
+type sessionDependencyStatus struct {
+	SessionID       string `json:"sessionId"`
+	RequiredState   string `json:"requiredState"`
+	Satisfied       bool   `json:"satisfied"`
+	DependencyState string `json:"dependencyState,omitempty"`
 }
 
 type branchStateDTO struct {
@@ -209,6 +226,8 @@ func newSessionCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newSessionTopCommand(ctx))
 	cmd.AddCommand(newSessionGetCommand(ctx))
 	cmd.AddCommand(newSessionKillCommand(ctx))
+	cmd.AddCommand(newSessionAdmitCommand(ctx))
+	cmd.AddCommand(newSessionCompleteCommand(ctx))
 	cmd.AddCommand(newSessionRestoreCommand(ctx))
 	cmd.AddCommand(newSessionExitAgentCommand(ctx))
 	cmd.AddCommand(newSessionResumeAgentCommand(ctx))
@@ -293,6 +312,58 @@ func newSessionKillCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	return cmd
+}
+
+func newSessionAdmitCommand(ctx *commandContext) *cobra.Command {
+	var opts sessionOptions
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "admit <id>",
+		Short: "Admit a queued or blocked session now",
+		Long: `Ask the scheduler to admit a queued or blocked session now.
+
+Without --force the scheduler re-evaluates dependencies and project limits, so
+a session that is still blocked stays blocked and the command exits 1 with the
+reason. --force bypasses both and records the override on the session.`,
+		Args: oneSessionIDArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := normalizeSessionID(args[0])
+			if err != nil {
+				return err
+			}
+			return ctx.admitSession(cmd.Context(), cmd, id, force, opts)
+		},
+	}
+	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	cmd.Flags().BoolVar(&force, "force", false, "Launch even when dependencies or limits block it; records the override")
+	return cmd
+}
+
+func newSessionCompleteCommand(ctx *commandContext) *cobra.Command {
+	var opts sessionOptions
+	var note string
+	cmd := &cobra.Command{
+		Use:   "complete <id>",
+		Short: "Mark a non-PR task complete",
+		Long: `Record the explicit completion fact an artifact or no-PR task needs.
+
+PR sessions do not need this: their PR facts drive ready and merged. Completion
+is idempotent, so a retry is safe.
+
+--note is echoed in the confirmation only; this phase does not persist a
+completion note.`,
+		Args: oneSessionIDArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := normalizeSessionID(args[0])
+			if err != nil {
+				return err
+			}
+			return ctx.completeSession(cmd.Context(), cmd, id, note, opts)
+		},
+	}
+	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	cmd.Flags().StringVar(&note, "note", "", "Optional note echoed in the confirmation (not persisted in this phase)")
 	return cmd
 }
 
@@ -690,6 +761,47 @@ func (c *commandContext) killSession(ctx context.Context, cmd *cobra.Command, id
 	return err
 }
 
+func (c *commandContext) admitSession(ctx context.Context, cmd *cobra.Command, id string, force bool, opts sessionOptions) error {
+	if opts.project != "" {
+		if _, err := c.fetchScopedSession(ctx, id, opts.project); err != nil {
+			return err
+		}
+	}
+	var res sessionResponse
+	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/admit", struct {
+		Force bool `json:"force,omitempty"`
+	}{Force: force}, &res); err != nil {
+		return err
+	}
+	label := "admitted"
+	if res.Session.SchedulingState == "" || res.Session.SchedulingState == "immediate" {
+		label = "already running"
+	}
+	if res.Session.AdmissionOverride {
+		label += " (override recorded)"
+	}
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s %s\n", res.Session.ID, label)
+	return err
+}
+
+func (c *commandContext) completeSession(ctx context.Context, cmd *cobra.Command, id, note string, opts sessionOptions) error {
+	if opts.project != "" {
+		if _, err := c.fetchScopedSession(ctx, id, opts.project); err != nil {
+			return err
+		}
+	}
+	var res sessionResponse
+	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/complete", struct{}{}, &res); err != nil {
+		return err
+	}
+	line := fmt.Sprintf("session %s completed", res.Session.ID)
+	if note = strings.TrimSpace(note); note != "" {
+		line += ": " + note
+	}
+	_, err := fmt.Fprintln(cmd.OutOrStdout(), line)
+	return err
+}
+
 func (c *commandContext) restoreSession(ctx context.Context, cmd *cobra.Command, id string, opts sessionOptions) error {
 	sess, err := c.fetchScopedSession(ctx, id, opts.project)
 	if err != nil {
@@ -1072,6 +1184,8 @@ func writeSessionDetails(cmd *cobra.Command, sess sessionDTO) error {
 		{"issue", sess.IssueID},
 		{"branch", formatBranchState(sess)},
 		{"terminated", fmt.Sprintf("%t", sess.IsTerminated)},
+		{"scheduling", sess.SchedulingState},
+		{"blocked", sess.BlockedReason},
 	}
 	for _, field := range fields {
 		if field[1] == "" {

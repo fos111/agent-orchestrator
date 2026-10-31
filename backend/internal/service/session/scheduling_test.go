@@ -205,3 +205,89 @@ func TestDependencySnapshotsPartiallyMergedPRSet(t *testing.T) {
 		t.Fatalf("snapshot = %+v, want two PRs and allMerged false", snaps["ao-1"])
 	}
 }
+
+// The read model carries the scheduling facts the queue strip and detail panel
+// need, and reports a pre-launch row as queued even though the persisted
+// provision column predates scheduling.
+func TestReadModelExposesSchedulingStateAndDependencies(t *testing.T) {
+	st := newFakeStore()
+	upstream := dependencyWorker("ao-1")
+	upstream.OutputType = domain.SessionOutputPR
+	st.sessions["ao-1"] = upstream
+	st.pr["ao-1"] = domain.PRFacts{URL: "pr1", Merged: true}
+
+	blocked := dependencyWorker("ao-2")
+	blocked.SchedulingState = domain.SchedulingBlocked
+	blocked.BlockedReason = string(domain.BlockedDependencyPending)
+	blocked.ProvisionState = domain.SessionProvisionProvisioning
+	st.sessions["ao-2"] = blocked
+	st.dependencies["ao-2"] = []domain.SessionDependency{{
+		SessionID: "ao-2", DependsOnSessionID: "ao-1", RequiredState: domain.DependencyMerged,
+	}}
+	st.sessions["ao-3"] = dependencyWorker("ao-3")
+	st.dependencies["ao-3"] = []domain.SessionDependency{{
+		SessionID: "ao-3", DependsOnSessionID: "ao-2", RequiredState: domain.DependencyReady,
+	}}
+
+	svc := NewWithDeps(Deps{Store: st})
+	dependent, err := svc.Get(context.Background(), "ao-2")
+	if err != nil {
+		t.Fatalf("get dependent: %v", err)
+	}
+	if dependent.ProvisionState != domain.SessionProvisionQueued {
+		t.Fatalf("provision state = %q, want the derived queued value", dependent.ProvisionState)
+	}
+	if len(dependent.DependsOn) != 1 {
+		t.Fatalf("dependsOn = %+v, want one edge", dependent.DependsOn)
+	}
+	edge := dependent.DependsOn[0]
+	if edge.SessionID != "ao-1" || edge.RequiredState != domain.DependencyMerged || !edge.Satisfied {
+		t.Fatalf("edge = %+v, want a satisfied merged edge to ao-1", edge)
+	}
+	if edge.DependencyState != string(domain.KanbanReady) {
+		t.Fatalf("dependency state = %q, want the dependency's kanban column", edge.DependencyState)
+	}
+	if len(dependent.Dependents) != 1 || dependent.Dependents[0] != "ao-3" {
+		t.Fatalf("dependents = %v, want ao-3", dependent.Dependents)
+	}
+
+	waiting, err := svc.Get(context.Background(), "ao-3")
+	if err != nil {
+		t.Fatalf("get waiting: %v", err)
+	}
+	if len(waiting.DependsOn) != 1 || waiting.DependsOn[0].Satisfied {
+		t.Fatalf("dependsOn = %+v, want one unsatisfied edge", waiting.DependsOn)
+	}
+	if waiting.DependsOn[0].DependencyState != string(domain.SchedulingBlocked) {
+		t.Fatalf("dependency state = %q, want the dependency's pre-launch state", waiting.DependsOn[0].DependencyState)
+	}
+
+	// The list read model carries the same facts for every row in the page.
+	list, err := svc.List(context.Background(), ListFilter{ProjectID: "ao"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, sess := range list {
+		if sess.ID == "ao-2" && (len(sess.DependsOn) != 1 || len(sess.Dependents) != 1) {
+			t.Fatalf("listed ao-2 = %+v, want its edges and dependents", sess)
+		}
+	}
+}
+
+// A missing dependency row is not silently satisfied: the edge reads false and
+// carries no state.
+func TestReadModelMarksMissingDependencyUnsatisfied(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["ao-2"] = dependencyWorker("ao-2")
+	st.dependencies["ao-2"] = []domain.SessionDependency{{
+		SessionID: "ao-2", DependsOnSessionID: "ao-404", RequiredState: domain.DependencyCompleted,
+	}}
+	svc := NewWithDeps(Deps{Store: st})
+	sess, err := svc.Get(context.Background(), "ao-2")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(sess.DependsOn) != 1 || sess.DependsOn[0].Satisfied || sess.DependsOn[0].DependencyState != "" {
+		t.Fatalf("dependsOn = %+v, want one unsatisfied edge with no state", sess.DependsOn)
+	}
+}

@@ -1162,3 +1162,76 @@ func TestSetupCallsHaveNoClientTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionAdmit_SendsForceAndReportsOverride(t *testing.T) {
+	cfg := setConfigEnv(t)
+	log := &sessionRequestLog{}
+	var force *bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.append(r)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1":
+			_, _ = io.WriteString(w, `{"session":`+sessionJSON("demo-1", "demo", "worker", "queued", false)+`}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/admit":
+			var req struct {
+				Force bool `json:"force"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			force = &req.Force
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-1","projectId":"demo","kind":"worker","status":"working","schedulingState":"admitted","admissionOverride":true}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"session", "admit", "demo-1", "--project", "demo", "--force")
+	if err != nil {
+		t.Fatalf("session admit failed: %v\nstderr=%s", err, errOut)
+	}
+	if force == nil || !*force {
+		t.Fatalf("admit body force = %v, want true", force)
+	}
+	if !strings.Contains(out, "session demo-1 admitted (override recorded)") {
+		t.Fatalf("unexpected admit output:\n%s", out)
+	}
+	want := []string{"GET /api/v1/sessions/demo-1", "POST /api/v1/sessions/demo-1/admit"}
+	if got := log.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionComplete_EchoesNote(t *testing.T) {
+	cfg := setConfigEnv(t)
+	log := &sessionRequestLog{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.append(r)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/complete":
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-1","projectId":"demo","kind":"worker","status":"done","schedulingState":"immediate","completedAt":"2026-10-31T09:00:00Z"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"session", "complete", "demo-1", "--note", "artifact published")
+	if err != nil {
+		t.Fatalf("session complete failed: %v\nstderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "session demo-1 completed: artifact published") {
+		t.Fatalf("unexpected complete output:\n%s", out)
+	}
+	want := []string{"POST /api/v1/sessions/demo-1/complete"}
+	if got := log.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}

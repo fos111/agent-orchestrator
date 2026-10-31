@@ -28,44 +28,8 @@ func decide(edges []domain.SessionDependency, snapshots map[domain.SessionID]dom
 	return domain.SchedulingQueued, ""
 }
 
-// edgeSatisfied evaluates one edge against the dependency's derived facts.
+// edgeSatisfied evaluates one edge against the dependency's derived facts. The
+// policy lives in domain so the session read model reports the same answer.
 func edgeSatisfied(edge domain.SessionDependency, dep domain.DependencySnapshot) (bool, domain.BlockedReason) {
-	if !dep.Found {
-		return false, domain.BlockedDependencyMissing
-	}
-	if dep.SchedulingState.WithDefault() == domain.SchedulingCancelled {
-		return false, domain.BlockedDependencyCancelled
-	}
-	if dep.IsTerminated && !dep.Succeeded() {
-		return false, domain.BlockedDependencyFailed
-	}
-	// A dependency that has not launched yet cannot have reached any required
-	// state; that is pending work, not a failure.
-	if dep.SchedulingState.IsPreLaunch() {
-		return false, domain.BlockedDependencyPending
-	}
-	switch edge.RequiredState {
-	case domain.DependencyReady:
-		if dep.KanbanColumn == domain.KanbanReady {
-			return true, ""
-		}
-		return false, domain.BlockedDependencyPending
-	case domain.DependencyMerged:
-		if dep.PRCount == 0 && !dep.OutputType.HasPR() {
-			// The dependency can no longer open a PR, or never could; waiting
-			// will never satisfy this edge.
-			return false, domain.BlockedDependencyUnsatisfiable
-		}
-		if dep.PRCount > 0 && dep.AllPRsMerged {
-			return true, ""
-		}
-		return false, domain.BlockedDependencyPending
-	case domain.DependencyCompleted:
-		if dep.CompletedAt != nil {
-			return true, ""
-		}
-		return false, domain.BlockedDependencyPending
-	default:
-		return false, domain.BlockedInvalid
-	}
+	return domain.DependencySatisfied(edge, dep)
 }

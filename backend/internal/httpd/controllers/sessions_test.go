@@ -103,6 +103,11 @@ type fakeSessionService struct {
 	workspaceBranches          sessionsvc.WorkspaceBranches
 	spawnErr                   error
 	lastSpawn                  ports.SpawnConfig
+	admitID                    domain.SessionID
+	admitForce                 bool
+	admitErr                   error
+	completeID                 domain.SessionID
+	completeErr                error
 	orchestratorMode           domain.SessionMode
 	orchestratorApproval       domain.PermissionMode
 	claimErr                   error
@@ -286,6 +291,37 @@ func (f *fakeSessionService) Spawn(_ context.Context, cfg ports.SpawnConfig) (do
 	s := domain.Session{SessionRecord: domain.SessionRecord{ID: domain.SessionID(string(cfg.ProjectID) + "-2"), ProjectID: cfg.ProjectID, IssueID: cfg.IssueID, Kind: cfg.Kind, Harness: cfg.Harness, DisplayName: cfg.DisplayName, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, AutoInjectReview: true, AutoInjectCI: true, CreatedAt: now, UpdatedAt: now}, Status: domain.StatusIdle}
 	f.sessions[s.ID] = s
 	return s, len(cfg.Prompt), 0, nil
+}
+
+func (f *fakeSessionService) Admit(_ context.Context, id domain.SessionID, force bool) (domain.Session, error) {
+	f.admitID = id
+	f.admitForce = force
+	if f.admitErr != nil {
+		return domain.Session{}, f.admitErr
+	}
+	s, ok := f.sessions[id]
+	if !ok {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	s.SchedulingState = domain.SchedulingAdmitted
+	s.AdmissionOverride = force
+	f.sessions[id] = s
+	return s, nil
+}
+
+func (f *fakeSessionService) Complete(_ context.Context, id domain.SessionID) (domain.Session, error) {
+	f.completeID = id
+	if f.completeErr != nil {
+		return domain.Session{}, f.completeErr
+	}
+	s, ok := f.sessions[id]
+	if !ok {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	now := time.Now().UTC()
+	s.CompletedAt = &now
+	f.sessions[id] = s
+	return s, nil
 }
 
 func (f *fakeSessionService) SpawnOrchestrator(ctx context.Context, projectID domain.ProjectID, clean bool, requestedMode domain.SessionMode, approval domain.PermissionMode) (domain.Session, error) {
@@ -5398,5 +5434,195 @@ func TestSessionsAPI_LegacyPreviewDocumentsHaveNoAPIOrigin(t *testing.T) {
 		if status != 200 || headers.Get("Content-Security-Policy") != "" {
 			t.Fatalf("isolated %s: status=%d headers=%v", name, status, headers)
 		}
+	}
+}
+
+func TestSessionsAPI_SpawnAcceptsStructuredDependencies(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"projectId":"ao","kind":"worker","harness":"codex","prompt":"fix","dependsOn":[{"sessionId":"ao-1","requiredState":"merged"},{"sessionId":"ao-2"}]}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn with dependsOn = %d, want 201; body=%s", status, body)
+	}
+	deps := svc.lastSpawn.Dependencies
+	if len(deps) != 2 {
+		t.Fatalf("spawn dependencies = %+v, want two", deps)
+	}
+	if deps[0].SessionID != "ao-1" || deps[0].RequiredState != domain.DependencyMerged {
+		t.Fatalf("first dependency = %+v, want ao-1 merged", deps[0])
+	}
+	if deps[1].SessionID != "ao-2" || deps[1].RequiredState != "" {
+		t.Fatalf("second dependency = %+v, want ao-2 with the output-type default", deps[1])
+	}
+}
+
+func TestSessionsAPI_SpawnAcceptsFlatDependencies(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"projectId":"ao","kind":"worker","harness":"codex","prompt":"fix","dependsOnSessionIds":["ao-1","ao-2"],"requiredDependencyState":"ready"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn with flat dependencies = %d, want 201; body=%s", status, body)
+	}
+	deps := svc.lastSpawn.Dependencies
+	if len(deps) != 2 || deps[0].SessionID != "ao-1" || deps[1].SessionID != "ao-2" {
+		t.Fatalf("spawn dependencies = %+v, want ao-1 then ao-2", deps)
+	}
+	for _, dep := range deps {
+		if dep.RequiredState != domain.DependencyReady {
+			t.Fatalf("dependency %+v required state = %q, want the shared ready", dep, dep.RequiredState)
+		}
+	}
+}
+
+// TestSessionsAPI_SpawnRejectsDependencyFormErrors pins the request-shape
+// errors: they are rejected before a row is created.
+func TestSessionsAPI_SpawnRejectsDependencyFormErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		code string
+	}{
+		{
+			name: "both forms",
+			body: `{"projectId":"ao","harness":"codex","prompt":"fix","dependsOn":[{"sessionId":"ao-1"}],"dependsOnSessionIds":["ao-2"]}`,
+			code: "DEPENDENCY_FORM_CONFLICT",
+		},
+		{
+			name: "flat state with structured form",
+			body: `{"projectId":"ao","harness":"codex","prompt":"fix","dependsOn":[{"sessionId":"ao-1"}],"requiredDependencyState":"merged"}`,
+			code: "DEPENDENCY_FORM_CONFLICT",
+		},
+		{
+			name: "unknown structured state",
+			body: `{"projectId":"ao","harness":"codex","prompt":"fix","dependsOn":[{"sessionId":"ao-1","requiredState":"reviewed"}]}`,
+			code: "DEPENDENCY_STATE_INVALID",
+		},
+		{
+			name: "unknown flat state",
+			body: `{"projectId":"ao","harness":"codex","prompt":"fix","dependsOnSessionIds":["ao-1"],"requiredDependencyState":"reviewed"}`,
+			code: "DEPENDENCY_STATE_INVALID",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newFakeSessionService()
+			srv := newSessionTestServer(t, svc)
+
+			body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions", tt.body)
+			assertErrorCode(t, body, status, http.StatusBadRequest, tt.code)
+			if svc.lastSpawn.ProjectID != "" {
+				t.Fatalf("rejected spawn still reached the service: %#v", svc.lastSpawn)
+			}
+		})
+	}
+}
+
+func TestSessionsAPI_AdmitForwardsForce(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/admit", `{"force":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("admit = %d, want 200; body=%s", status, body)
+	}
+	if svc.admitID != "ao-1" || !svc.admitForce {
+		t.Fatalf("admit call = id:%q force:%v, want ao-1 forced", svc.admitID, svc.admitForce)
+	}
+	var resp controllers.SessionResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("admit response: %v; body=%s", err, body)
+	}
+	if resp.Session.SchedulingState != domain.SchedulingAdmitted || !resp.Session.AdmissionOverride {
+		t.Fatalf("admit response session = %+v, want admitted with the override", resp.Session.SessionRecord)
+	}
+}
+
+// An admit with no body is the plain re-evaluation: force defaults to false.
+func TestSessionsAPI_AdmitWithoutBody(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/admit", "")
+	if status != http.StatusOK {
+		t.Fatalf("admit without body = %d, want 200; body=%s", status, body)
+	}
+	if svc.admitID != "ao-1" || svc.admitForce {
+		t.Fatalf("admit call = id:%q force:%v, want ao-1 not forced", svc.admitID, svc.admitForce)
+	}
+}
+
+func TestSessionsAPI_AdmitPropagatesConflict(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.admitErr = apierr.Conflict("SESSION_NOT_ADMITTABLE", "This session is blocked: dependency_pending", nil)
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/admit", "")
+	assertErrorCode(t, body, status, http.StatusConflict, "SESSION_NOT_ADMITTABLE")
+}
+
+func TestSessionsAPI_CompleteReturnsCompletedSession(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/complete", "")
+	if status != http.StatusOK {
+		t.Fatalf("complete = %d, want 200; body=%s", status, body)
+	}
+	if svc.completeID != "ao-1" {
+		t.Fatalf("complete call = %q, want ao-1", svc.completeID)
+	}
+	var resp controllers.SessionResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("complete response: %v; body=%s", err, body)
+	}
+	if resp.Session.CompletedAt == nil {
+		t.Fatalf("complete response session = %+v, want completedAt", resp.Session.SessionRecord)
+	}
+}
+
+// The wire read model carries scheduling and dependency facts without hiding
+// the pre-existing fields old clients read.
+func TestSessionsAPI_GetExposesSchedulingAndDependencies(t *testing.T) {
+	svc := newFakeSessionService()
+	rec := svc.sessions["ao-1"].SessionRecord
+	rec.SchedulingState = domain.SchedulingBlocked
+	rec.BlockedReason = string(domain.BlockedDependencyPending)
+	svc.sessions["ao-1"] = domain.Session{
+		SessionRecord: rec,
+		Status:        domain.StatusIdle,
+		DependsOn: []domain.SessionDependencyStatus{{
+			SessionID:       "ao-2",
+			RequiredState:   domain.DependencyMerged,
+			Satisfied:       false,
+			DependencyState: string(domain.KanbanBuilding),
+		}},
+		Dependents: []domain.SessionID{"ao-3"},
+	}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1", "")
+	if status != http.StatusOK {
+		t.Fatalf("get = %d, want 200; body=%s", status, body)
+	}
+	var resp controllers.SessionResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("get response: %v; body=%s", err, body)
+	}
+	got := resp.Session
+	if got.SchedulingState != domain.SchedulingBlocked || got.BlockedReason != string(domain.BlockedDependencyPending) {
+		t.Fatalf("scheduling = %q reason = %q, want blocked/dependency_pending", got.SchedulingState, got.BlockedReason)
+	}
+	if len(got.DependsOn) != 1 || got.DependsOn[0].SessionID != "ao-2" || got.DependsOn[0].Satisfied {
+		t.Fatalf("dependsOn = %+v, want one unsatisfied edge to ao-2", got.DependsOn)
+	}
+	if len(got.Dependents) != 1 || got.Dependents[0] != "ao-3" {
+		t.Fatalf("dependents = %v, want ao-3", got.Dependents)
+	}
+	if got.Status != domain.StatusIdle || got.ID != "ao-1" {
+		t.Fatalf("legacy fields = id:%q status:%q, want ao-1/idle", got.ID, got.Status)
 	}
 }

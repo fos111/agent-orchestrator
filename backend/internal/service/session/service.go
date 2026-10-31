@@ -51,6 +51,8 @@ type Store interface {
 	ListCurrentHeadReviewRunsForSession(ctx context.Context, id domain.SessionID) ([]domain.CurrentHeadReviewRun, error)
 	ListCurrentHeadReviewRunsForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.CurrentHeadReviewRun, error)
 	ListInterruptedSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID]bool, error)
+	ListSessionDependenciesForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.SessionDependency, error)
+	ListDependentSessionIDsForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.SessionID, error)
 	ListPRsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.PullRequest, error)
 	ListReportedPRURLs(ctx context.Context, id domain.SessionID) ([]string, error)
 	ListSessionWorktrees(ctx context.Context, id domain.SessionID) ([]domain.SessionWorktreeRecord, error)
@@ -1507,6 +1509,9 @@ func (s *Service) sessionsFromRecords(ctx context.Context, filtered []domain.Ses
 		}
 		out = append(out, sess)
 	}
+	if err := s.attachDependencies(ctx, out); err != nil {
+		return nil, err
+	}
 	if s.statusRecoveryRevision() != recoveryRevision {
 		for i := range out {
 			out[i].StatusReadiness = "checking"
@@ -1596,6 +1601,11 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 	if err != nil {
 		return domain.Session{}, err
 	}
+	dependent := []domain.Session{sess}
+	if err := s.attachDependencies(ctx, dependent); err != nil {
+		return domain.Session{}, err
+	}
+	sess = dependent[0]
 	if s.statusRecoveryRevision() != recoveryRevision {
 		sess.StatusReadiness = "checking"
 	}
@@ -1663,6 +1673,12 @@ func (s *Service) toSessionWithFacts(ctx context.Context, rec domain.SessionReco
 		SessionStatusReadiness(domain.SessionRecord) string
 	}); ok {
 		readiness = recovery.SessionStatusReadiness(rec)
+	}
+	if rec.SchedulingState.IsPreLaunch() {
+		// A queued or blocked row owns no workspace yet. The persisted column
+		// keeps the pre-scheduling value (its CHECK predates scheduling), so
+		// the wire read model reports the honest pre-launch value instead.
+		rec.ProvisionState = domain.SessionProvisionQueued
 	}
 	return domain.Session{
 		SessionRecord:    rec,

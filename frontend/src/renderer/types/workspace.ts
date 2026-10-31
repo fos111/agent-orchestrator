@@ -164,8 +164,12 @@ export type WorkspaceSession = {
 	 * that fails leaves the session in place ("failed") with
 	 * {@link provisionError} explaining why. Absent means ready — which is also
 	 * what every session created before asynchronous spawn reads as.
+	 *
+	 * "queued" is the pre-launch scheduling state: the daemon holds the
+	 * session without a workspace until its dependencies and project limits
+	 * allow it to start, so it is not yet provisioning.
 	 */
-	provisionState?: "provisioning" | "ready" | "failed";
+	provisionState?: "queued" | "provisioning" | "ready" | "failed";
 	/** Why a failed start stopped, in the daemon's words. */
 	provisionError?: string;
 	/**

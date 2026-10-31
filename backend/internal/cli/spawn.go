@@ -33,6 +33,8 @@ type spawnOptions struct {
 	output          string
 	effort          string
 	claimPR         string
+	dependsOn       []string
+	dependencyState string
 	noTakeover      bool
 	skipAgentCheck  bool
 	trackerProvider string
@@ -41,26 +43,30 @@ type spawnOptions struct {
 // spawnRequest mirrors the daemon's SpawnSessionRequest body for
 // POST /api/v1/sessions. The CLI keeps its own copy so it need not import httpd.
 type spawnRequest struct {
-	ProjectID       string `json:"projectId,omitempty"`
-	IssueID         string `json:"issueId,omitempty"`
-	ParentSessionID string `json:"parentSessionId,omitempty"`
-	TrackerProvider string `json:"trackerProvider,omitempty"`
-	Kind            string `json:"kind,omitempty"`
-	Mode            string `json:"mode,omitempty"`
-	Harness         string `json:"harness,omitempty"`
-	Branch          string `json:"branch,omitempty"`
-	Prompt          string `json:"prompt,omitempty"`
-	Model           string `json:"model,omitempty"`
-	Effort          string `json:"effort,omitempty"`
-	RequestedOutput string `json:"requestedOutput,omitempty"`
-	DisplayName     string `json:"displayName"`
+	ProjectID               string   `json:"projectId,omitempty"`
+	IssueID                 string   `json:"issueId,omitempty"`
+	ParentSessionID         string   `json:"parentSessionId,omitempty"`
+	TrackerProvider         string   `json:"trackerProvider,omitempty"`
+	Kind                    string   `json:"kind,omitempty"`
+	Mode                    string   `json:"mode,omitempty"`
+	Harness                 string   `json:"harness,omitempty"`
+	Branch                  string   `json:"branch,omitempty"`
+	Prompt                  string   `json:"prompt,omitempty"`
+	Model                   string   `json:"model,omitempty"`
+	Effort                  string   `json:"effort,omitempty"`
+	RequestedOutput         string   `json:"requestedOutput,omitempty"`
+	DisplayName             string   `json:"displayName"`
+	DependsOnSessionIds     []string `json:"dependsOnSessionIds,omitempty"`
+	RequiredDependencyState string   `json:"requiredDependencyState,omitempty"`
 }
 
 type spawnResult struct {
 	Session struct {
-		ID          string `json:"id"`
-		Status      string `json:"status"`
-		DisplayName string `json:"displayName"`
+		ID              string `json:"id"`
+		Status          string `json:"status"`
+		DisplayName     string `json:"displayName"`
+		SchedulingState string `json:"schedulingState,omitempty"`
+		BlockedReason   string `json:"blockedReason,omitempty"`
 	} `json:"session"`
 	PromptBytes       int `json:"promptBytes,omitempty"`
 	SystemPromptBytes int `json:"systemPromptBytes,omitempty"`
@@ -104,12 +110,31 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if opts.output != "" && opts.kind == "orchestrator" {
 				return usageError{fmt.Errorf("--output is supported for worker sessions only")}
 			}
+			if len(opts.dependsOn) > 0 && opts.kind == "orchestrator" {
+				return usageError{fmt.Errorf("--depends-on is supported for worker sessions only")}
+			}
+			if len(opts.dependsOn) > 0 && strings.TrimSpace(opts.claimPR) != "" {
+				return usageError{fmt.Errorf("--depends-on cannot be combined with --claim-pr; the session has no workspace until it launches")}
+			}
+			if opts.dependencyState != "" {
+				if len(opts.dependsOn) == 0 {
+					return usageError{fmt.Errorf("--dependency-state requires --depends-on")}
+				}
+				switch opts.dependencyState {
+				case "ready", "merged", "completed":
+				default:
+					return usageError{fmt.Errorf(`--dependency-state must be "ready", "merged", or "completed"`)}
+				}
+			}
 			if opts.standalone {
 				if opts.kind == "orchestrator" {
 					return usageError{fmt.Errorf("standalone sessions must be workers")}
 				}
 				if strings.TrimSpace(opts.branch) != "" || strings.TrimSpace(opts.issue) != "" || strings.TrimSpace(opts.claimPR) != "" {
 					return usageError{fmt.Errorf("standalone sessions do not support --branch, --issue, or --claim-pr")}
+				}
+				if len(opts.dependsOn) > 0 {
+					return usageError{fmt.Errorf("standalone sessions do not support --depends-on")}
 				}
 				if strings.TrimSpace(opts.harness) == "" {
 					return usageError{fmt.Errorf("--agent is required with --standalone")}
@@ -164,19 +189,21 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				}
 			}
 			req := spawnRequest{
-				ProjectID:       opts.project,
-				IssueID:         opts.issue,
-				ParentSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
-				TrackerProvider: opts.trackerProvider,
-				Kind:            opts.kind,
-				Harness:         opts.harness,
-				Mode:            opts.mode,
-				Branch:          opts.branch,
-				Prompt:          opts.prompt,
-				Model:           strings.TrimSpace(opts.model),
-				Effort:          strings.TrimSpace(opts.effort),
-				RequestedOutput: opts.output,
-				DisplayName:     name,
+				ProjectID:               opts.project,
+				IssueID:                 opts.issue,
+				ParentSessionID:         strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
+				TrackerProvider:         opts.trackerProvider,
+				Kind:                    opts.kind,
+				Harness:                 opts.harness,
+				Mode:                    opts.mode,
+				Branch:                  opts.branch,
+				Prompt:                  opts.prompt,
+				Model:                   strings.TrimSpace(opts.model),
+				Effort:                  strings.TrimSpace(opts.effort),
+				RequestedOutput:         opts.output,
+				DisplayName:             name,
+				DependsOnSessionIds:     opts.dependsOn,
+				RequiredDependencyState: opts.dependencyState,
 			}
 			var res spawnResult
 			if err := ctx.postSetupJSON(cmd.Context(), "sessions", req, &res); err != nil {
@@ -214,6 +241,15 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if _, err := fmt.Fprintf(out, "spawned session %s %q (%s)%s%s\n", res.Session.ID, displayName, res.Session.Status, claimLabel, promptSize); err != nil {
 				return err
 			}
+			if res.Session.SchedulingState == "queued" || res.Session.SchedulingState == "blocked" {
+				reason := ""
+				if res.Session.BlockedReason != "" {
+					reason = " (" + res.Session.BlockedReason + ")"
+				}
+				if _, err := fmt.Fprintf(out, "scheduling: %s%s; it launches automatically when ready\n", res.Session.SchedulingState, reason); err != nil {
+					return err
+				}
+			}
 			if opts.claimPR != "" {
 				return writeClaimPRCheckout(out, claim.BranchChanged)
 			}
@@ -242,6 +278,8 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")
 	f.StringVar(&opts.trackerProvider, "tracker-provider", "github", "Issue tracker provider: github or gitlab (default: github)")
 	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 100 characters)")
+	f.StringArrayVar(&opts.dependsOn, "depends-on", nil, "Session id this worker depends on; repeat for multiple dependencies (worker sessions only)")
+	f.StringVar(&opts.dependencyState, "dependency-state", "", "Required state for every --depends-on entry: ready, merged, or completed (default: the dependency's output type)")
 	f.StringVar(&opts.claimPR, "claim-pr", "", "Claim PR ownership metadata only for the spawned session; does not check out the PR branch")
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")
 	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip CLI readiness warnings (the daemon still validates launch readiness)")
