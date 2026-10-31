@@ -107,6 +107,17 @@ type SchedulingConfig struct {
 	// DefaultDependencyState is "auto" (empty) or one required state. Auto
 	// infers each edge from the dependency's output type.
 	DefaultDependencyState string `json:"defaultDependencyState,omitempty"`
+	// MaxDagNodesPerRun caps how many nodes one DAG submission may create. 0
+	// uses MaxDagNodesPerRun.
+	MaxDagNodesPerRun int `json:"maxDagNodesPerRun,omitempty"`
+}
+
+// DagNodeLimit resolves the effective per-run node cap.
+func (c SchedulingConfig) DagNodeLimit() int {
+	if c.MaxDagNodesPerRun > 0 {
+		return c.MaxDagNodesPerRun
+	}
+	return MaxDagNodesPerRun
 }
 
 // DefaultMaxDependenciesPerSession is the built-in cap on incoming edges,

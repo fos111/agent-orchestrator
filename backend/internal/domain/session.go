@@ -374,6 +374,12 @@ type SessionRecord struct {
 	// prompt and the resolved agent selection but no credentials, and it never
 	// appears in the API read model.
 	QueuedSpawnConfig string `json:"-"`
+	// DagRunID points at the DAG run that created this session. It is nil for
+	// an ordinary session. The run is a coordinator, not a parent session.
+	DagRunID *DagRunID `json:"dagRunId,omitempty"`
+	// DagNodeID is the submitter's node identifier inside DagRunID. It is nil
+	// for an ordinary session.
+	DagNodeID *DagNodeID `json:"dagNodeId,omitempty"`
 	// BranchState is what the daemon last observed about the session branch:
 	// its commits on top of the base and whether they reached the remote. The
 	// branch-state reconcile writes it only when a fact changes; nil until the first

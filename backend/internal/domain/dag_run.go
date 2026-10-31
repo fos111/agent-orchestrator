@@ -84,7 +84,9 @@ const (
 	// cap.
 	MaxDagNodePromptLength = 16 << 10
 	// MaxDagNodesPerRun bounds how many sessions one submission may create.
-	MaxDagNodesPerRun = 128
+	// The bound keeps one submission transaction and the rendered graph small
+	// enough to read; it matches the documented 64-node run.
+	MaxDagNodesPerRun = 64
 )
 
 // DagRun is one atomic DAG submission. RootSessionID is optional: it points at
@@ -147,4 +149,192 @@ func DefaultDagRequiredState(output RequestedOutput) DagRequiredState {
 		return DagRequiredCompleted
 	}
 	return DagRequiredMerged
+}
+
+// DagNodeStatus is the derived state of one run node in the read model. It is
+// never stored: the session row keeps the durable facts, and the same
+// derivation the run status uses is computed at read time.
+type DagNodeStatus string
+
+// DAG node statuses.
+const (
+	// DagNodeQueued means the node may launch as soon as a slot frees.
+	DagNodeQueued DagNodeStatus = "queued"
+	// DagNodeBlocked means the node waits on a dependency or a limit. The
+	// node keeps the blocking reason so a failed dependency can fail the run.
+	DagNodeBlocked DagNodeStatus = "blocked"
+	// DagNodeRunning means the node was admitted and has not reached a
+	// terminal fact yet.
+	DagNodeRunning DagNodeStatus = "running"
+	// DagNodeCompleted means the node reached the run's success predicate.
+	DagNodeCompleted DagNodeStatus = "completed"
+	// DagNodeFailed means the node terminated without a success fact.
+	DagNodeFailed DagNodeStatus = "failed"
+	// DagNodeCancelled means the node was cancelled before it launched.
+	DagNodeCancelled DagNodeStatus = "cancelled"
+)
+
+// DagNodeView is one node of a run in the read model. SessionID is assigned by
+// the daemon at creation and maps the submitter's node ID to the real session.
+type DagNodeView struct {
+	NodeID        DagNodeID     `json:"id"`
+	SessionID     SessionID     `json:"sessionId"`
+	Name          string        `json:"name"`
+	Status        DagNodeStatus `json:"status" enum:"queued,blocked,running,completed,failed,cancelled"`
+	BlockedReason string        `json:"blockedReason,omitempty"`
+	DependsOn     []DagNodeID   `json:"dependsOn,omitempty"`
+	CreatedAt     time.Time     `json:"createdAt"`
+}
+
+// DagRunCounts summarizes one run's nodes by derived status. The header uses
+// it without walking the node list.
+type DagRunCounts struct {
+	Total     int `json:"total"`
+	Queued    int `json:"queued"`
+	Blocked   int `json:"blocked"`
+	Running   int `json:"running"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
+}
+
+// DagRunView is the read model of one run: the stored summary plus its derived
+// status, node counts, and nodes. Status is derived from node facts so a stale
+// stored value can never make the UI claim a run finished when it did not.
+type DagRunView struct {
+	ID                DagRunID      `json:"id"`
+	ProjectID         ProjectID     `json:"projectId"`
+	RootSessionID     *SessionID    `json:"rootSessionId,omitempty"`
+	Name              string        `json:"name"`
+	Status            DagRunStatus  `json:"status" enum:"pending,running,completed,failed,cancelled"`
+	CancelRequestedAt *time.Time    `json:"cancelRequestedAt,omitempty"`
+	CreatedAt         time.Time     `json:"createdAt"`
+	CompletedAt       *time.Time    `json:"completedAt,omitempty"`
+	Counts            DagRunCounts  `json:"counts"`
+	Nodes             []DagNodeView `json:"nodes"`
+}
+
+// DagNodeDependencySeed is one submitted edge, named by the submitter's node
+// IDs. The store resolves both ends to created session IDs inside the
+// submission transaction.
+type DagNodeDependencySeed struct {
+	NodeID        DagNodeID
+	RequiredState DependencyRequiredState
+}
+
+// DagNodeSeed is one node ready to persist. The session Record already carries
+// its scheduling state and queue config; the store fills the run and node ids
+// and resolves Dependencies as it creates the rows.
+type DagNodeSeed struct {
+	NodeID       DagNodeID
+	Record       SessionRecord
+	Dependencies []DagNodeDependencySeed
+}
+
+// DeriveDagNodeStatus derives one node's status from its durable session row
+// and the same delivery facts the dependency scheduler uses.
+func DeriveDagNodeStatus(rec SessionRecord, snapshot DependencySnapshot) DagNodeStatus {
+	if rec.SchedulingState.WithDefault() == SchedulingCancelled {
+		return DagNodeCancelled
+	}
+	if rec.SchedulingState.IsPreLaunch() {
+		if rec.SchedulingState.WithDefault() == SchedulingQueued {
+			return DagNodeQueued
+		}
+		return DagNodeBlocked
+	}
+	if snapshot.Succeeded() {
+		return DagNodeCompleted
+	}
+	if rec.IsTerminated {
+		return DagNodeFailed
+	}
+	return DagNodeRunning
+}
+
+// DeriveDagRunStatus applies the documented run status precedence:
+// cancel_requested, all cancelled, failed with no admitted node, all completed,
+// any admitted, pending.
+func DeriveDagRunStatus(run DagRun, nodes []DagNodeView) DagRunStatus {
+	if run.CancelRequestedAt != nil || run.Status == DagRunCancelled {
+		return DagRunCancelled
+	}
+	if len(nodes) == 0 {
+		return DagRunPending
+	}
+	allCancelled := true
+	allCompleted := true
+	anyAdmitted := false
+	anyFailed := false
+	for _, node := range nodes {
+		if node.Status != DagNodeCancelled {
+			allCancelled = false
+		}
+		if node.Status != DagNodeCompleted {
+			allCompleted = false
+		}
+		switch node.Status {
+		case DagNodeRunning, DagNodeCompleted:
+			anyAdmitted = true
+		case DagNodeFailed:
+			anyFailed = true
+		case DagNodeBlocked:
+			reason := BlockedReason(node.BlockedReason)
+			if reason.IsDependencyFailure() || reason.LaunchFailed() {
+				anyFailed = true
+			}
+		}
+	}
+	if allCancelled {
+		return DagRunCancelled
+	}
+	if anyFailed && !anyAdmitted {
+		return DagRunFailed
+	}
+	if allCompleted {
+		return DagRunCompleted
+	}
+	if anyAdmitted {
+		return DagRunRunning
+	}
+	return DagRunPending
+}
+
+// CountDagNodes summarizes node views.
+func CountDagNodes(nodes []DagNodeView) DagRunCounts {
+	counts := DagRunCounts{Total: len(nodes)}
+	for _, node := range nodes {
+		switch node.Status {
+		case DagNodeQueued:
+			counts.Queued++
+		case DagNodeBlocked:
+			counts.Blocked++
+		case DagNodeRunning:
+			counts.Running++
+		case DagNodeCompleted:
+			counts.Completed++
+		case DagNodeFailed:
+			counts.Failed++
+		case DagNodeCancelled:
+			counts.Cancelled++
+		}
+	}
+	return counts
+}
+
+// NewDagRunView builds the read model from a stored run and its derived nodes.
+func NewDagRunView(run DagRun, nodes []DagNodeView) DagRunView {
+	status := DeriveDagRunStatus(run, nodes)
+	return DagRunView{
+		ID:                run.ID,
+		ProjectID:         run.ProjectID,
+		RootSessionID:     run.RootSessionID,
+		Name:              run.Name,
+		Status:            status,
+		CancelRequestedAt: run.CancelRequestedAt,
+		CreatedAt:         run.CreatedAt,
+		CompletedAt:       run.CompletedAt,
+		Counts:            CountDagNodes(nodes),
+		Nodes:             nodes,
+	}
 }

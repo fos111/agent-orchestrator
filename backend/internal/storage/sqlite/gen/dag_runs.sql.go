@@ -8,6 +8,7 @@ package gen
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -29,6 +30,29 @@ type CancelDagRunParams struct {
 
 func (q *Queries) CancelDagRun(ctx context.Context, arg CancelDagRunParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, cancelDagRun, arg.CancelRequestedAt, arg.CompletedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const cancelDagRunNodes = `-- name: CancelDagRunNodes :execrows
+UPDATE sessions
+SET scheduling_state = 'cancelled',
+    is_terminated = 1,
+    updated_at = ?
+WHERE dag_run_id = ?
+    AND scheduling_state IN ('queued', 'blocked')
+    AND is_terminated = 0
+`
+
+type CancelDagRunNodesParams struct {
+	UpdatedAt time.Time
+	DagRunID  *domain.DagRunID
+}
+
+func (q *Queries) CancelDagRunNodes(ctx context.Context, arg CancelDagRunNodesParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cancelDagRunNodes, arg.UpdatedAt, arg.DagRunID)
 	if err != nil {
 		return 0, err
 	}
@@ -90,6 +114,470 @@ func (q *Queries) InsertDagRun(ctx context.Context, arg InsertDagRunParams) (Dag
 		&i.CompletedAt,
 	)
 	return i, err
+}
+
+const listSessionsByDagRun = `-- name: ListSessionsByDagRun :many
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
+    activity_state, activity_last_at, is_terminated, branch, workspace_path,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
+    preview_revision, cleanup_generation, runtime_launch_id,
+    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
+    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    artifact_dir, session_output_type,
+    latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
+    requested_output,
+    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    claude_activity_facts, codex_activity_facts,
+    hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
+    client_request_id, client_request_hash, client_request_committed,
+    runtime_released_launch_id,
+    scheduling_state, blocked_reason, completed_at, admitted_at, admission_override, queued_spawn_config,
+    dag_run_id, dag_node_id
+FROM sessions WHERE dag_run_id = ?
+ORDER BY created_at, id
+`
+
+type ListSessionsByDagRunRow struct {
+	ID                               domain.SessionID
+	ProjectID                        *domain.ProjectID
+	Num                              int64
+	IssueID                          domain.IssueID
+	ParentSessionID                  *domain.SessionID
+	Kind                             domain.SessionKind
+	Harness                          domain.AgentHarness
+	ActivityState                    domain.ActivityState
+	ActivityLastAt                   time.Time
+	IsTerminated                     bool
+	Branch                           string
+	WorkspacePath                    string
+	RuntimeHandleID                  string
+	AgentSessionID                   string
+	AgentSessionIDLaunchID           string
+	NativeIdentityObservedAt         sql.NullTime
+	Prompt                           string
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
+	Revision                         int64
+	DisplayName                      string
+	FirstSignalAt                    sql.NullTime
+	PreviewURL                       string
+	PreviewRevision                  int64
+	CleanupGeneration                int64
+	RuntimeLaunchID                  string
+	WorkspaceRepoPath                string
+	TerminateOnPRMerge               bool
+	DiffBaseSha                      string
+	DiffBaseRef                      string
+	ReviewerHarness                  domain.ReviewerHarness
+	ReviewerAgentConfig              string
+	IsPinned                         bool
+	PinnedAt                         sql.NullTime
+	SessionMode                      domain.SessionMode
+	ProviderConversationID           string
+	ControllerGeneration             string
+	BrowserCapabilityVerifier        string
+	ArtifactDir                      string
+	SessionOutputType                string
+	LatestUserPrompt                 string
+	LatestUserPromptAt               sql.NullTime
+	LatestInteractionAt              sql.NullTime
+	LatestAssistantUpdate            string
+	LatestAssistantUpdateAt          sql.NullTime
+	ConversationCheckpointState      domain.ConversationCheckpointState
+	ConversationCheckpointGeneration string
+	ConversationCheckpointNativeID   string
+	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
+	NativeCheckpointEvidence         string
+	NativeTranscriptPath             string
+	AutoInjectReview                 bool
+	AutoInjectCI                     bool
+	AutoReviewEnabled                bool
+	Model                            string
+	Effort                           string
+	SessionPermissions               string
+	RequestedOutput                  string
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
+	ProvisionSteps                   string
+	BranchState                      string
+	BranchNaming                     bool
+	TemporaryBranch                  string
+	IsTaskPreparation                bool
+	AutomationRunID                  *domain.AutomationRunID
+	AutomationLaunchCompleted        bool
+	ClaudeActivityFacts              string
+	CodexActivityFacts               string
+	HibernatedAt                     sql.NullTime
+	StaleBinarySince                 sql.NullTime
+	StaleBinaryVersion               string
+	StaleBinaryLaunch                string
+	StaleBinarySwitchFailedAt        sql.NullTime
+	ClientRequestID                  string
+	ClientRequestHash                string
+	ClientRequestCommitted           bool
+	RuntimeReleasedLaunchID          string
+	SchedulingState                  domain.SchedulingState
+	BlockedReason                    string
+	CompletedAt                      sql.NullTime
+	AdmittedAt                       sql.NullTime
+	AdmissionOverride                bool
+	QueuedSpawnConfig                string
+	DagRunID                         *domain.DagRunID
+	DagNodeID                        *domain.DagNodeID
+}
+
+func (q *Queries) ListSessionsByDagRun(ctx context.Context, dagRunID *domain.DagRunID) ([]ListSessionsByDagRunRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionsByDagRun, dagRunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSessionsByDagRunRow{}
+	for rows.Next() {
+		var i ListSessionsByDagRunRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Num,
+			&i.IssueID,
+			&i.ParentSessionID,
+			&i.Kind,
+			&i.Harness,
+			&i.ActivityState,
+			&i.ActivityLastAt,
+			&i.IsTerminated,
+			&i.Branch,
+			&i.WorkspacePath,
+			&i.RuntimeHandleID,
+			&i.AgentSessionID,
+			&i.AgentSessionIDLaunchID,
+			&i.NativeIdentityObservedAt,
+			&i.Prompt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Revision,
+			&i.DisplayName,
+			&i.FirstSignalAt,
+			&i.PreviewURL,
+			&i.PreviewRevision,
+			&i.CleanupGeneration,
+			&i.RuntimeLaunchID,
+			&i.WorkspaceRepoPath,
+			&i.TerminateOnPRMerge,
+			&i.DiffBaseSha,
+			&i.DiffBaseRef,
+			&i.ReviewerHarness,
+			&i.ReviewerAgentConfig,
+			&i.IsPinned,
+			&i.PinnedAt,
+			&i.SessionMode,
+			&i.ProviderConversationID,
+			&i.ControllerGeneration,
+			&i.BrowserCapabilityVerifier,
+			&i.ArtifactDir,
+			&i.SessionOutputType,
+			&i.LatestUserPrompt,
+			&i.LatestUserPromptAt,
+			&i.LatestInteractionAt,
+			&i.LatestAssistantUpdate,
+			&i.LatestAssistantUpdateAt,
+			&i.ConversationCheckpointState,
+			&i.ConversationCheckpointGeneration,
+			&i.ConversationCheckpointNativeID,
+			&i.ConversationCheckpointUnsettled,
+			&i.ConversationCheckpointTurnID,
+			&i.NativeCheckpointEvidence,
+			&i.NativeTranscriptPath,
+			&i.AutoInjectReview,
+			&i.AutoInjectCI,
+			&i.AutoReviewEnabled,
+			&i.Model,
+			&i.Effort,
+			&i.SessionPermissions,
+			&i.RequestedOutput,
+			&i.ProvisionState,
+			&i.ProvisionError,
+			&i.ProvisionSteps,
+			&i.BranchState,
+			&i.BranchNaming,
+			&i.TemporaryBranch,
+			&i.IsTaskPreparation,
+			&i.AutomationRunID,
+			&i.AutomationLaunchCompleted,
+			&i.ClaudeActivityFacts,
+			&i.CodexActivityFacts,
+			&i.HibernatedAt,
+			&i.StaleBinarySince,
+			&i.StaleBinaryVersion,
+			&i.StaleBinaryLaunch,
+			&i.StaleBinarySwitchFailedAt,
+			&i.ClientRequestID,
+			&i.ClientRequestHash,
+			&i.ClientRequestCommitted,
+			&i.RuntimeReleasedLaunchID,
+			&i.SchedulingState,
+			&i.BlockedReason,
+			&i.CompletedAt,
+			&i.AdmittedAt,
+			&i.AdmissionOverride,
+			&i.QueuedSpawnConfig,
+			&i.DagRunID,
+			&i.DagNodeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessionsByDagRunIDs = `-- name: ListSessionsByDagRunIDs :many
+SELECT id, project_id, num, issue_id, parent_session_id, kind, harness,
+    activity_state, activity_last_at, is_terminated, branch, workspace_path,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
+    preview_revision, cleanup_generation, runtime_launch_id,
+    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
+    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    artifact_dir, session_output_type,
+    latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
+    requested_output,
+    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    claude_activity_facts, codex_activity_facts,
+    hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
+    client_request_id, client_request_hash, client_request_committed,
+    runtime_released_launch_id,
+    scheduling_state, blocked_reason, completed_at, admitted_at, admission_override, queued_spawn_config,
+    dag_run_id, dag_node_id
+FROM sessions WHERE dag_run_id IN (/*SLICE:dag_run_ids*/?)
+ORDER BY created_at, id
+`
+
+type ListSessionsByDagRunIDsRow struct {
+	ID                               domain.SessionID
+	ProjectID                        *domain.ProjectID
+	Num                              int64
+	IssueID                          domain.IssueID
+	ParentSessionID                  *domain.SessionID
+	Kind                             domain.SessionKind
+	Harness                          domain.AgentHarness
+	ActivityState                    domain.ActivityState
+	ActivityLastAt                   time.Time
+	IsTerminated                     bool
+	Branch                           string
+	WorkspacePath                    string
+	RuntimeHandleID                  string
+	AgentSessionID                   string
+	AgentSessionIDLaunchID           string
+	NativeIdentityObservedAt         sql.NullTime
+	Prompt                           string
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
+	Revision                         int64
+	DisplayName                      string
+	FirstSignalAt                    sql.NullTime
+	PreviewURL                       string
+	PreviewRevision                  int64
+	CleanupGeneration                int64
+	RuntimeLaunchID                  string
+	WorkspaceRepoPath                string
+	TerminateOnPRMerge               bool
+	DiffBaseSha                      string
+	DiffBaseRef                      string
+	ReviewerHarness                  domain.ReviewerHarness
+	ReviewerAgentConfig              string
+	IsPinned                         bool
+	PinnedAt                         sql.NullTime
+	SessionMode                      domain.SessionMode
+	ProviderConversationID           string
+	ControllerGeneration             string
+	BrowserCapabilityVerifier        string
+	ArtifactDir                      string
+	SessionOutputType                string
+	LatestUserPrompt                 string
+	LatestUserPromptAt               sql.NullTime
+	LatestInteractionAt              sql.NullTime
+	LatestAssistantUpdate            string
+	LatestAssistantUpdateAt          sql.NullTime
+	ConversationCheckpointState      domain.ConversationCheckpointState
+	ConversationCheckpointGeneration string
+	ConversationCheckpointNativeID   string
+	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
+	NativeCheckpointEvidence         string
+	NativeTranscriptPath             string
+	AutoInjectReview                 bool
+	AutoInjectCI                     bool
+	AutoReviewEnabled                bool
+	Model                            string
+	Effort                           string
+	SessionPermissions               string
+	RequestedOutput                  string
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
+	ProvisionSteps                   string
+	BranchState                      string
+	BranchNaming                     bool
+	TemporaryBranch                  string
+	IsTaskPreparation                bool
+	AutomationRunID                  *domain.AutomationRunID
+	AutomationLaunchCompleted        bool
+	ClaudeActivityFacts              string
+	CodexActivityFacts               string
+	HibernatedAt                     sql.NullTime
+	StaleBinarySince                 sql.NullTime
+	StaleBinaryVersion               string
+	StaleBinaryLaunch                string
+	StaleBinarySwitchFailedAt        sql.NullTime
+	ClientRequestID                  string
+	ClientRequestHash                string
+	ClientRequestCommitted           bool
+	RuntimeReleasedLaunchID          string
+	SchedulingState                  domain.SchedulingState
+	BlockedReason                    string
+	CompletedAt                      sql.NullTime
+	AdmittedAt                       sql.NullTime
+	AdmissionOverride                bool
+	QueuedSpawnConfig                string
+	DagRunID                         *domain.DagRunID
+	DagNodeID                        *domain.DagNodeID
+}
+
+func (q *Queries) ListSessionsByDagRunIDs(ctx context.Context, dagRunIds []*domain.DagRunID) ([]ListSessionsByDagRunIDsRow, error) {
+	query := listSessionsByDagRunIDs
+	var queryParams []interface{}
+	if len(dagRunIds) > 0 {
+		for _, v := range dagRunIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:dag_run_ids*/?", strings.Repeat(",?", len(dagRunIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:dag_run_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSessionsByDagRunIDsRow{}
+	for rows.Next() {
+		var i ListSessionsByDagRunIDsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Num,
+			&i.IssueID,
+			&i.ParentSessionID,
+			&i.Kind,
+			&i.Harness,
+			&i.ActivityState,
+			&i.ActivityLastAt,
+			&i.IsTerminated,
+			&i.Branch,
+			&i.WorkspacePath,
+			&i.RuntimeHandleID,
+			&i.AgentSessionID,
+			&i.AgentSessionIDLaunchID,
+			&i.NativeIdentityObservedAt,
+			&i.Prompt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Revision,
+			&i.DisplayName,
+			&i.FirstSignalAt,
+			&i.PreviewURL,
+			&i.PreviewRevision,
+			&i.CleanupGeneration,
+			&i.RuntimeLaunchID,
+			&i.WorkspaceRepoPath,
+			&i.TerminateOnPRMerge,
+			&i.DiffBaseSha,
+			&i.DiffBaseRef,
+			&i.ReviewerHarness,
+			&i.ReviewerAgentConfig,
+			&i.IsPinned,
+			&i.PinnedAt,
+			&i.SessionMode,
+			&i.ProviderConversationID,
+			&i.ControllerGeneration,
+			&i.BrowserCapabilityVerifier,
+			&i.ArtifactDir,
+			&i.SessionOutputType,
+			&i.LatestUserPrompt,
+			&i.LatestUserPromptAt,
+			&i.LatestInteractionAt,
+			&i.LatestAssistantUpdate,
+			&i.LatestAssistantUpdateAt,
+			&i.ConversationCheckpointState,
+			&i.ConversationCheckpointGeneration,
+			&i.ConversationCheckpointNativeID,
+			&i.ConversationCheckpointUnsettled,
+			&i.ConversationCheckpointTurnID,
+			&i.NativeCheckpointEvidence,
+			&i.NativeTranscriptPath,
+			&i.AutoInjectReview,
+			&i.AutoInjectCI,
+			&i.AutoReviewEnabled,
+			&i.Model,
+			&i.Effort,
+			&i.SessionPermissions,
+			&i.RequestedOutput,
+			&i.ProvisionState,
+			&i.ProvisionError,
+			&i.ProvisionSteps,
+			&i.BranchState,
+			&i.BranchNaming,
+			&i.TemporaryBranch,
+			&i.IsTaskPreparation,
+			&i.AutomationRunID,
+			&i.AutomationLaunchCompleted,
+			&i.ClaudeActivityFacts,
+			&i.CodexActivityFacts,
+			&i.HibernatedAt,
+			&i.StaleBinarySince,
+			&i.StaleBinaryVersion,
+			&i.StaleBinaryLaunch,
+			&i.StaleBinarySwitchFailedAt,
+			&i.ClientRequestID,
+			&i.ClientRequestHash,
+			&i.ClientRequestCommitted,
+			&i.RuntimeReleasedLaunchID,
+			&i.SchedulingState,
+			&i.BlockedReason,
+			&i.CompletedAt,
+			&i.AdmittedAt,
+			&i.AdmissionOverride,
+			&i.QueuedSpawnConfig,
+			&i.DagRunID,
+			&i.DagNodeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const selectDagRunByID = `-- name: SelectDagRunByID :one
