@@ -89,7 +89,9 @@ type TeamMessageReport struct {
 
 // DeliveredCount and FailedCount summarize a report for CLI and UI surfaces.
 func (r TeamMessageReport) DeliveredCount() int { return r.count(TeamDeliveryDelivered) }
-func (r TeamMessageReport) FailedCount() int    { return r.count(TeamDeliveryFailed) }
+
+// FailedCount reports how many member deliveries failed.
+func (r TeamMessageReport) FailedCount() int { return r.count(TeamDeliveryFailed) }
 
 func (r TeamMessageReport) count(status TeamDeliveryStatus) int {
 	n := 0
