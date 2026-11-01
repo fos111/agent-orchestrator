@@ -21,12 +21,12 @@ const turnFailureErrorLogEvery = time.Minute
 const DefaultTurnFailureTick = 2 * time.Second
 
 // TurnFailureEvent is the activity event a transcript-proven failed turn
-// reports, matching Claude Code's StopFailure hook.
-const TurnFailureEvent = "stop-failure"
-
-// TurnInterruptEvent is the activity event a transcript-proven Esc interrupt
-// reports, matching Codex's Interrupt hook.
-const TurnInterruptEvent = "interrupt"
+// reports, matching Claude Code's StopFailure hook. TurnInterruptEvent is the
+// one an Esc interrupt reports, matching Codex's Interrupt hook.
+const (
+	TurnFailureEvent   = ports.ActivityEventStopFailure
+	TurnInterruptEvent = ports.ActivityEventInterrupt
+)
 
 // turnFailureHarnesses are the harnesses whose terminal turn can end without
 // firing a hook. Codex runs its Stop hook only after a successful turn, so a

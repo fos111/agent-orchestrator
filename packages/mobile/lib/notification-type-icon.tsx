@@ -49,6 +49,21 @@ const ICONS: Record<NotificationTypeIconProps["icon"], React.ReactNode> = {
 			<Circle cx="18" cy="18" r="3" />
 		</>
 	),
+	// CircleAlert
+	"circle-alert": (
+		<>
+			<Circle cx="12" cy="12" r="10" />
+			<Path d="M12 8v4" />
+			<Path d="M12 16h.01" />
+		</>
+	),
+	// CircleCheck
+	"circle-check": (
+		<>
+			<Circle cx="12" cy="12" r="10" />
+			<Path d="m9 12 2 2 4-4" />
+		</>
+	),
 	// Bell
 	bell: (
 		<>

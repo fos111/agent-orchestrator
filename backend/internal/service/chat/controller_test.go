@@ -3390,6 +3390,55 @@ func TestSendVerifiesExcerptAndFallsBackToTextForProvider(t *testing.T) {
 	}
 }
 
+// The ACP `session/prompt` RPC is how a chat turn fails: the provider answers
+// the open prompt request with an error. That is the same user-visible outcome
+// as a terminal turn that ended on an error, so lifecycle must receive the
+// verified stop-failure event with the provider's own text — not a silent
+// chat.turn.completed that never reaches the user.
+func TestACPPromptFailureReportsStopFailureActivity(t *testing.T) {
+	h := newHarness(t)
+	turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "hello", ClientMessageID: "acp-prompt-failure", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptErr := errors.New("ACP session/prompt: rpc error: code = Internal desc = provider unavailable")
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+			ProviderEventID: "host:acp-failure", TurnState: domain.TurnStateFailed, Err: promptErr},
+	)
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateFailed &&
+			s.Turns[0].ErrorMessage == promptErr.Error()
+	})
+
+	var (
+		failures int
+		got      ports.ActivitySignal
+	)
+	for _, signal := range h.activity.snapshot() {
+		if signal.Event == ports.ActivityEventStopFailure {
+			failures++
+			got = signal
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("stop-failure signals = %d, want exactly 1; signals = %+v",
+			failures, h.activity.snapshot())
+	}
+	if got.State != domain.ActivityIdle {
+		t.Fatalf("failed turn reported state %q, want idle", got.State)
+	}
+	if got.Detail != promptErr.Error() {
+		t.Fatalf("signal detail = %q, want the ACP prompt error %q", got.Detail, promptErr.Error())
+	}
+	if got.ControllerGeneration == "" {
+		t.Fatal("failure signal lost the controller generation fence")
+	}
+}
+
 func TestProviderPromptFailureSettlesTurnAndRecordsRecoveryOnce(t *testing.T) {
 	h := newHarness(t)
 	turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
@@ -3428,6 +3477,11 @@ func TestProviderPromptFailureSettlesTurnAndRecordsRecoveryOnce(t *testing.T) {
 		if activity.Kind == domain.ActivityKindError || strings.Contains(activity.ProviderItemID, "ao-reauth-") {
 			t.Fatalf("terminal failure was duplicated as an activity: %#v", activity)
 		}
+	}
+	// A login problem is not a crash: the user already gets the account alert and
+	// can reauthenticate in place, so the crash alert must stay silent.
+	if hasActivitySignal(h.activity.snapshot(), domain.ActivityIdle, ports.ActivityEventStopFailure) {
+		t.Fatalf("auth-required failure reported a crash: %+v", h.activity.snapshot())
 	}
 }
 

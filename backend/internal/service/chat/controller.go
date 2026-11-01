@@ -3580,11 +3580,23 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		}
 		activityState := domain.ActivityIdle
 		activityEvent := "chat.turn.completed"
+		failureDetail := ""
 		if reauthRequired {
 			activityState = domain.ActivityWaitingInput
 			activityEvent = "chat.account.reauth"
+		} else if settledTurnState(event) == domain.TurnStateFailed &&
+			(event.TurnState == domain.TurnStateFailed || event.Err != nil) {
+			// A failed chat turn is the same user-visible outcome as a failed
+			// terminal turn: the agent could not do the work, and the user must
+			// hear about it through the verified crash alert rather than a chat
+			// they are not looking at. ACP's `session/prompt` error is carried
+			// as the detail, so the banner names the actual failure.
+			activityEvent = ports.ActivityEventStopFailure
+			if event.Err != nil {
+				failureDetail = event.Err.Error()
+			}
 		}
-		c.reportActivity(ctx, activityState, activityEvent, now)
+		c.reportActivityWithDetail(ctx, activityState, activityEvent, failureDetail, now)
 		// Only a completed turn releases queued work; a failed or recovered one holds
 		// the queue so it cannot cascade through the same outage (issue #4861).
 		_ = c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted) // drain logs failures.
@@ -4141,6 +4153,19 @@ func (c *Controller) reportActivity(
 	event string,
 	now time.Time,
 ) {
+	c.reportActivityWithDetail(ctx, state, event, "", now)
+}
+
+// reportActivityWithDetail is reportActivity plus the producer's own account of
+// a failure. Lifecycle uses the detail only for a failed-turn event; every other
+// caller passes none.
+func (c *Controller) reportActivityWithDetail(
+	ctx context.Context,
+	state domain.ActivityState,
+	event string,
+	detail string,
+	now time.Time,
+) {
 	if c.activity == nil || c.reviewID != "" {
 		return
 	}
@@ -4149,6 +4174,7 @@ func (c *Controller) reportActivity(
 		State:                state,
 		Timestamp:            now,
 		Event:                event,
+		Detail:               detail,
 		ControllerGeneration: c.generation,
 	}); err != nil {
 		c.log.Debug("chat activity signal rejected",

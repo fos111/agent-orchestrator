@@ -892,6 +892,91 @@ describe("NotificationCenter", () => {
 		});
 	});
 
+	it("renders a terminated crash row with the warning icon and offers Resume instead of opening", async () => {
+		const crash: NotificationDTO = {
+			id: "ntf_crash",
+			sessionId: "sess-dead",
+			projectId: "proj-1",
+			prUrl: "",
+			type: "session_crashed",
+			title: "Old PR crashed",
+			body: "The session's runtime stopped unexpectedly. Resume the session to continue.",
+			status: "read",
+			createdAt: "2026-07-19T09:00:00Z",
+			target: { kind: "session", sessionId: "sess-dead" },
+		};
+		notificationQueryMock.mockImplementation((status: NotificationListStatus) =>
+			status === "all"
+				? {
+						...notificationQueryResult(status),
+						data: {
+							pageParams: [""],
+							pages: [{ notifications: [crash], unreadCount: 0, unresolvedCount: 0 }],
+						},
+					}
+				: notificationQueryResult(status),
+		);
+		renderNotificationCenter();
+		await clickOpen();
+
+		const row = rowOf("Old PR crashed");
+		const icon = row.querySelector("svg");
+		expect(icon).toHaveClass("lucide-triangle-alert");
+		expect(icon?.parentElement).toHaveClass("text-warning");
+		expect(within(row).getByRole("button", { name: "This session was archived. Restore it?" })).toBeInTheDocument();
+
+		await userEvent.click(screen.getByText(crash.body));
+		expect(navigateMock).not.toHaveBeenCalled();
+		expect(restoreSessionMock).not.toHaveBeenCalled();
+
+		await userEvent.click(within(row).getByRole("button", { name: "This session was archived. Restore it?" }));
+		await waitFor(() => expect(restoreSessionMock).toHaveBeenCalledWith("sess-dead"));
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "sess-dead" },
+		});
+	});
+
+	// A crash on a still-live session has nothing to resume; the row opens the
+	// session just like any other live session notification.
+	it("opens a live crash session directly without offering Resume", async () => {
+		const crash: NotificationDTO = {
+			id: "ntf_crash_live",
+			sessionId: "sess-1",
+			projectId: "proj-1",
+			prUrl: "",
+			type: "session_crashed",
+			title: "Checkout flow crashed",
+			body: "The session's runtime stopped unexpectedly. Resume the session to continue.",
+			status: "read",
+			createdAt: "2026-07-21T09:00:00Z",
+			target: { kind: "session", sessionId: "sess-1" },
+		};
+		notificationQueryMock.mockImplementation((status: NotificationListStatus) =>
+			status === "all"
+				? {
+						...notificationQueryResult(status),
+						data: {
+							pageParams: [""],
+							pages: [{ notifications: [crash], unreadCount: 0, unresolvedCount: 0 }],
+						},
+					}
+				: notificationQueryResult(status),
+		);
+		renderNotificationCenter();
+		await clickOpen();
+
+		const row = rowOf("Checkout flow crashed");
+		expect(within(row).queryByRole("button", { name: "This session was archived. Restore it?" })).not.toBeInTheDocument();
+
+		await userEvent.click(screen.getByText(crash.body));
+		expect(restoreSessionMock).not.toHaveBeenCalled();
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "sess-1" },
+		});
+	});
+
 	it("does not open sessions while workspace facts are still loading", async () => {
 		workspaceQueryMock.mockReturnValue({
 			data: undefined,
@@ -1042,6 +1127,61 @@ describe("NotificationCenter cloud rows", () => {
 
 		await userEvent.click(screen.getByText("acme/cloud#2 has unresolved review feedback."));
 		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
+	it("offers Resume for a terminated cloud crash row instead of opening it", async () => {
+		const crash: CloudCpNotification = {
+			id: "cntf_crash",
+			source: "cloud",
+			orgId: "org-1",
+			projectId: "cproj-1",
+			sessionId: "csess-crashed",
+			type: "session_crashed",
+			title: "Cloud checkout crashed",
+			body: "The session's runtime stopped unexpectedly. Resume the session to continue.",
+			status: "read",
+			createdAt: "2026-07-21T09:00:00Z",
+			updatedAt: "2026-07-21T09:00:00Z",
+		};
+		cloudNotificationsMock.mockReturnValue(cloudNotificationsResult([crash]));
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				{
+					id: "proj-1",
+					name: "acme/app",
+					sessions: [
+						{ id: "sess-1", isTerminated: false, status: "needs_input", title: "Checkout flow" },
+						{ id: "sess-dead", isTerminated: true, status: "terminated", title: "Old PR" },
+					],
+				},
+				{
+					id: "cproj-1",
+					name: "acme/cloud",
+					kind: "cloud",
+					sessions: [{ id: "csess-crashed", isTerminated: true, status: "terminated", title: "Cloud checkout" }],
+				},
+			],
+			isError: false,
+			isPending: false,
+			isSuccess: true,
+			refetch: vi.fn(),
+		});
+		renderNotificationCenter();
+		await clickOpen();
+
+		const row = rowOf("Cloud checkout crashed");
+		expect(within(row).getByRole("button", { name: "This session was archived. Restore it?" })).toBeInTheDocument();
+
+		await userEvent.click(screen.getByText(crash.body));
+		expect(navigateMock).not.toHaveBeenCalled();
+		expect(restoreSessionMock).not.toHaveBeenCalled();
+
+		await userEvent.click(within(row).getByRole("button", { name: "This session was archived. Restore it?" }));
+		await waitFor(() => expect(restoreSessionMock).toHaveBeenCalledWith("csess-crashed"));
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "cproj-1", sessionId: "csess-crashed" },
+		});
 	});
 
 	it("clears one cloud row without opening its session", async () => {

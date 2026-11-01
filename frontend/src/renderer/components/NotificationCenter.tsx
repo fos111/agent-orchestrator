@@ -15,6 +15,7 @@ import {
 	LoaderCircle,
 	MessageSquareDiff,
 	MessageSquareDot,
+	TriangleAlert,
 	X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -801,7 +802,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 								const cloudSessionKey = cloudSessionId ? sessionUiKey(cloudSessionId) : undefined;
 								const cloudMeta = cloudSessionKey ? sessionMeta.get(cloudSessionKey) : undefined;
 								const cloudTerminated = Boolean(cloudMeta) && Boolean(cloudSessionKey && terminatedIds.has(cloudSessionKey));
-								const cloudOfferRestore = cloudTerminated && cloud.type === "needs_input";
+								const cloudOfferRestore = cloudTerminated && (cloud.type === "needs_input" || cloud.type === "session_crashed");
 								const clearingKey = cloudRowKey(cloud.id);
 								return (
 									<CloudNotificationItem
@@ -831,12 +832,13 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 							const meta = sessionKey ? sessionMeta.get(sessionKey) : undefined;
 							const terminated = Boolean(sessionKey) && terminatedIds.has(sessionKey ?? "");
 							const key = notificationKey(hostId, notification.id);
-							// Restoring only makes sense when an agent is actually paused waiting
-							// on input. PR outcomes (ready_to_merge, pr_merged, pr_closed_unmerged)
-							// describe work that already finished — there is nothing to resume, so
-							// a terminated session behind one of these should stay viewable, not
-							// gated behind a restore action.
-							const offerRestore = sessionReady && terminated && notification.type === "needs_input";
+							// Restoring only makes sense when an agent is paused waiting on input
+							// or a crashed runtime can be resumed. PR outcomes (ready_to_merge,
+							// pr_merged, pr_closed_unmerged) describe work that already finished —
+							// there is nothing to resume, so a terminated session behind one of
+							// these should stay viewable, not gated behind a restore action.
+							const offerRestore =
+								sessionReady && terminated && (notification.type === "needs_input" || notification.type === "session_crashed");
 							return (
 								<NotificationItem
 									highlighted={highlightedIds.has(key) || notification.status === "unread"}
@@ -923,11 +925,12 @@ function NotificationEmpty({ icon: Icon, message }: { icon: typeof Bell; message
 
 /**
  * The whole row is the click target for live sessions. A terminated session
- * behind a `needs_input` notification is not navigable — restore is the only
- * action, since there is a paused agent to resume. PR-outcome notifications
- * (`offerRestore` false) describe finished work, so a terminated session stays
- * viewable there instead of being gated behind restore. PR titles stay a real
- * link so a PR row can open the PR without a separate icon button.
+ * behind a `needs_input` or `session_crashed` notification is not navigable —
+ * restore is the only action, since there is a paused agent or a crashed
+ * runtime to resume. PR-outcome notifications (`offerRestore` false) describe
+ * finished work, so a terminated session stays viewable there instead of being
+ * gated behind restore. PR titles stay a real link so a PR row can open the PR
+ * without a separate icon button.
  */
 const NotificationItem = memo(function NotificationItem({
 	highlighted,
@@ -1353,6 +1356,14 @@ function notificationIcon(type: string) {
 			return GitPullRequestArrow;
 		case "agent_failed":
 			return CircleAlert;
+		case "session_crashed":
+			return TriangleAlert;
+		case "session_failed":
+			return CircleAlert;
+		case "session_stuck":
+			return MessageSquareDot;
+		case "session_done":
+			return CheckCheck;
 		case "agent_completed":
 			return CheckCheck;
 		case "pr_opened":
@@ -1370,12 +1381,16 @@ function notificationIcon(type: string) {
 function notificationIconClass(type: string): string {
 	switch (type) {
 		case "needs_input":
+		case "session_crashed":
+		case "session_failed":
+		case "session_stuck":
 		case "review_feedback":
 		case "review_changes_requested":
 			return "text-warning";
 		case "agent_failed":
 			return "text-error";
 		case "agent_completed":
+		case "session_done":
 		case "pr_opened":
 		case "ready_to_merge":
 		case "review_completed":

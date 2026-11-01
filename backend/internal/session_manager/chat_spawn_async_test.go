@@ -45,6 +45,17 @@ type failReadyProvisionStore struct {
 	failed bool
 }
 
+// fakeNotificationWriter records the outcomes the manager publishes itself.
+type fakeNotificationWriter struct {
+	intents []ports.NotificationIntent
+	err     error
+}
+
+func (f *fakeNotificationWriter) Notify(_ context.Context, intent ports.NotificationIntent) error {
+	f.intents = append(f.intents, intent)
+	return f.err
+}
+
 func (s *failReadyProvisionStore) SetSessionProvisionState(ctx context.Context, id domain.SessionID, state domain.SessionProvisionState, message string, now time.Time) (bool, error) {
 	if state == domain.SessionProvisionReady && !s.failed {
 		s.failed = true
@@ -230,6 +241,83 @@ func TestSpawnAsyncChat_FailedStartKeepsSessionAndReason(t *testing.T) {
 	}
 	if len(launcher.started) != 0 {
 		t.Fatal("controller started despite the workspace failing")
+	}
+}
+
+// A start that cannot complete is a user-visible outcome: the session is
+// durable but never ran, so the user must hear about it away from the app —
+// through the same verified crash alert as a dead runtime.
+func TestSpawnAsyncChat_FailedStartEmitsCrashNotification(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	m.browserCapabilities = browsersvc.NewAuthority()
+	sink := &fakeNotificationWriter{}
+	m.notifications = sink
+	failedAt := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	m.clock = func() time.Time { return failedAt }
+	deferred := deferredBackground(m)
+	ws := m.workspace.(*fakeWorkspace)
+	ws.createErr = errors.New("branch already checked out")
+
+	rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	(*deferred)[0]()
+
+	stored := st.sessions[rec.ID]
+	if stored.ProvisionState != domain.SessionProvisionFailed {
+		t.Fatalf("provision state = %q, want failed", stored.ProvisionState)
+	}
+	if len(sink.intents) != 1 {
+		t.Fatalf("intents = %d, want exactly 1 failed-start alert: %+v", len(sink.intents), sink.intents)
+	}
+	got := sink.intents[0]
+	if got.Type != domain.NotificationSessionCrashed {
+		t.Fatalf("type = %q, want the verified %q alert", got.Type, domain.NotificationSessionCrashed)
+	}
+	if got.SessionID != rec.ID || got.ProjectID != stored.ProjectID || got.SessionDisplayName != stored.DisplayName {
+		t.Fatalf("intent lost session identity: %+v", got)
+	}
+	if !strings.Contains(got.Detail, "branch already checked out") {
+		t.Fatalf("detail = %q, want the provision failure", got.Detail)
+	}
+	wantPrefix := "session_crashed:" + string(rec.ID) + ":provision:"
+	if !strings.HasPrefix(got.SourceKey, wantPrefix) {
+		t.Fatalf("source key = %q, want %q…", got.SourceKey, wantPrefix)
+	}
+	if !got.CreatedAt.Equal(stored.UpdatedAt) {
+		t.Fatalf("created at = %v, want the failed write time %v", got.CreatedAt, stored.UpdatedAt)
+	}
+}
+
+// A second write of the same failed state (a retried cleanup, a boot sweep)
+// must not buzz again for the same dead start.
+func TestSpawnAsyncChat_RepeatedFailedStartNotifiesOnce(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	m.browserCapabilities = browsersvc.NewAuthority()
+	sink := &fakeNotificationWriter{}
+	m.notifications = sink
+	deferred := deferredBackground(m)
+	ws := m.workspace.(*fakeWorkspace)
+	ws.createErr = errors.New("branch already checked out")
+
+	rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	(*deferred)[0]()
+
+	// Re-assert the failed state the way a retried cleanup would.
+	if _, err := m.setProvisionState(context.Background(), rec.ID, domain.SessionProvisionFailed, "branch already checked out"); err != nil {
+		t.Fatalf("repeat failed write: %v", err)
+	}
+	if len(sink.intents) != 1 {
+		t.Fatalf("intents = %d after repeat failed write, want 1", len(sink.intents))
+	}
+	if st.sessions[rec.ID].ProvisionState != domain.SessionProvisionFailed {
+		t.Fatal("repeat write must still leave the session failed")
 	}
 }
 

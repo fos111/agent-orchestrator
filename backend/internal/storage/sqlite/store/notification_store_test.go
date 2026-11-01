@@ -681,3 +681,76 @@ func TestNotificationStore_MarkNotificationsReadOnlyTouchesGivenIDs(t *testing.T
 		t.Fatalf("unread count = %d err=%v, want 1 (ntf_3 must stay reachable)", count, err)
 	}
 }
+
+// The migration widens the type CHECK constraint by rebuilding the table. This
+// proves every new kind survives that rebuild: a kind the constraint rejected
+// would fail here, and the failure would surface in production as a 500 on the
+// daemon's own notification write.
+func TestNotificationStore_AcceptsSessionOutcomeKinds(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	sess, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+
+	for _, typ := range []domain.NotificationType{
+		domain.NotificationSessionCrashed,
+		domain.NotificationSessionStuck,
+		domain.NotificationSessionDone,
+	} {
+		t.Run(string(typ), func(t *testing.T) {
+			// No PR URL: these kinds describe the session itself.
+			rec, inserted, err := s.CreateNotification(ctx, domain.NotificationRecord{
+				ID:        "ntf_" + string(typ),
+				SessionID: sess.ID,
+				ProjectID: sess.ProjectID,
+				Type:      typ,
+				Title:     "checkout-flow",
+				Body:      "the worker's own words",
+				Status:    domain.NotificationUnread,
+				CreatedAt: now,
+			})
+			if err != nil || !inserted {
+				t.Fatalf("CreateNotification(%s) inserted=%v err=%v", typ, inserted, err)
+			}
+			if rec.Type != typ || rec.Body != "the worker's own words" {
+				t.Fatalf("read back %+v, want type %s with the body intact", rec, typ)
+			}
+		})
+	}
+}
+
+// The open-dedupe index survives the table rebuild and still collapses
+// duplicate unread rows for the same session, type, and PR. Losing it would let
+// repeated observations of one crash stack another unread row each time.
+func TestNotificationStore_CrashDedupeIsOneOpenRowPerSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	sess, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+
+	for i, id := range []string{"ntf_a", "ntf_b", "ntf_c"} {
+		_, inserted, err := s.CreateNotification(ctx, domain.NotificationRecord{
+			ID:        id,
+			SessionID: sess.ID,
+			ProjectID: sess.ProjectID,
+			Type:      domain.NotificationSessionCrashed,
+			Title:     "checkout-flow crashed",
+			Status:    domain.NotificationUnread,
+			CreatedAt: now.Add(time.Duration(i) * time.Second),
+		})
+		if err != nil {
+			t.Fatalf("CreateNotification(%s): %v", id, err)
+		}
+		if inserted != (i == 0) {
+			t.Fatalf("insert %d (%s) inserted=%v, want only the first to insert", i, id, inserted)
+		}
+	}
+}

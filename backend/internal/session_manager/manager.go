@@ -222,6 +222,13 @@ const (
 	EnvBrowserRuntimeTokenStdin = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
 )
 
+// NotificationWriter turns a session outcome the manager observes — a start
+// that failed — into a notification the user sees away from the app. It is
+// optional and best effort: a failed push must never fail the durable write.
+type NotificationWriter interface {
+	Notify(ctx context.Context, intent ports.NotificationIntent) error
+}
+
 type lifecycleRecorder interface {
 	PrepareLaunch(id domain.SessionID, launchID string) error
 	CancelLaunch(id domain.SessionID, launchID string)
@@ -406,6 +413,9 @@ type Manager struct {
 	agents    ports.AgentResolver
 	workspace ports.Workspace
 	store     Store
+	// notifications publishes terminal outcomes the manager itself observes
+	// (a start that failed). Nil disables them, as in focused tests.
+	notifications NotificationWriter
 	// agentReadiness is late-bound by SetAgentReadiness.
 	agentReadiness ports.AgentReadinessProvider
 	// messenger is a sessionguard.Guard wrapping the raw messenger, so every
@@ -853,6 +863,9 @@ type Deps struct {
 	// instead of the desktop browser bridge.
 	AgentBrowserURL   string
 	AgentBrowserToken string
+	// notifications publishes a start that failed as a user-visible outcome.
+	// Nil disables it, as in focused tests.
+	Notifications NotificationWriter
 	// DataDir owns durable attachment storage and is exported to spawned agents
 	// as AO_DATA_DIR so their hook commands can open the same store.
 	DataDir string
@@ -913,6 +926,7 @@ func New(d Deps) *Manager {
 		workspace:                      d.Workspace,
 		store:                          d.Store,
 		defaults:                       d.Defaults,
+		notifications:                  d.Notifications,
 		chat:                           d.Chat,
 		lcm:                            d.Lifecycle,
 		preview:                        d.Preview,

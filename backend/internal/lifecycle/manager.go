@@ -442,6 +442,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		terminationLaunch   string
 		terminationRevision int64
 		shouldTerminate     bool
+		terminatedSession   domain.SessionRecord
 	)
 	if err := m.mutate(ctx, id, func(cur domain.SessionRecord, now time.Time) (domain.SessionRecord, bool) {
 		if cur.IsTerminated || !matchesLaunch(cur) {
@@ -498,6 +499,7 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		delete(m.flights, id)
 		delete(m.steps, id)
 		terminated = true
+		terminatedSession = next
 		return next, true
 	})
 	if err != nil {
@@ -509,8 +511,37 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		// runtime reaper must not leave the session's Docker containers behind
 		// just because it never called MarkTerminated directly.
 		m.reapSessionContainers(ctx, id)
+		// Only this path knows the runtime died without AO asking for it.
+		// Explicit kills, agent exits, and daemon-shutdown teardown go through
+		// MarkTerminated, which stays silent. Best-effort like every other
+		// lifecycle notification: a failed emit must never undo the termination.
+		m.emitNotification(ctx, crashNotificationIntent(terminatedSession, f))
 	}
 	return nil
+}
+
+// crashNotificationIntent describes the one durable alert for a reaper-confirmed
+// runtime death. The source key pins dedupe to the launched runtime, so repeated
+// observations of the same crash converge on one record; the session-only key is
+// the fallback when no launch id is known. Copy is built by enrich from the
+// session label only — no logs, paths, prompts, or provider payloads.
+func crashNotificationIntent(rec domain.SessionRecord, f ports.RuntimeFacts) *ports.NotificationIntent {
+	launchID := strings.TrimSpace(rec.Metadata.RuntimeLaunchID)
+	if launchID == "" {
+		launchID = strings.TrimSpace(f.LaunchID)
+	}
+	sourceKey := fmt.Sprintf("session_crashed:%s", rec.ID)
+	if launchID != "" {
+		sourceKey = fmt.Sprintf("session_crashed:%s:%s", rec.ID, launchID)
+	}
+	return &ports.NotificationIntent{
+		Type:               domain.NotificationSessionCrashed,
+		SessionID:          rec.ID,
+		ProjectID:          rec.ProjectID,
+		CreatedAt:          rec.Activity.LastActivityAt,
+		SourceKey:          sourceKey,
+		SessionDisplayName: rec.DisplayName,
+	}
 }
 
 // A concurrent session writer can advance updated_at between lifecycle's read
@@ -592,6 +623,7 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		return nil
 	}
 	var intent *ports.NotificationIntent
+	var failureIntent *ports.NotificationIntent
 	m.mu.Lock()
 	for {
 		pending, ok := m.pendingLaunches[id]
@@ -1048,6 +1080,32 @@ retryProjection:
 			SessionDisplayName: next.DisplayName,
 		}
 	}
+	// A transcript-proven failed or interrupted turn means the agent ran into a
+	// problem and could not do its job. The user asked for exactly that outcome
+	// to reach them through the same verified crash alert as a dead runtime, so
+	// it is emitted as session_crashed rather than a separate silent kind. The
+	// runtime may still be alive; the alert says the session crashed and carries
+	// the failure detail as its body.
+	if detail, failed := turnFailureDetail(s.Event); failed && !next.IsTerminated {
+		// The producer's own error is more useful than a restatement, and it is
+		// the same text the user sees in the chat timeline for an ACP
+		// session/prompt failure. Enrichment still flattens and bounds it.
+		if producerDetail := strings.TrimSpace(s.Detail); producerDetail != "" {
+			detail = producerDetail
+		}
+		failureIntent = &ports.NotificationIntent{
+			Type:               domain.NotificationSessionCrashed,
+			SessionID:          next.ID,
+			ProjectID:          next.ProjectID,
+			CreatedAt:          next.Activity.LastActivityAt,
+			SessionDisplayName: next.DisplayName,
+			Detail:             detail,
+			// Same crash family, distinct source key: a failed turn must not be
+			// swallowed by a later runtime-death alert for the same launch, and
+			// repeated observations of this one turn must converge on one row.
+			SourceKey: fmt.Sprintf("session_crashed:%s:%s:turn:%d", next.ID, next.Metadata.RuntimeLaunchID, next.Activity.LastActivityAt.UnixNano()),
+		}
+	}
 	// Leaving the needs-input family is the user answering: the notification
 	// that pinged them has nothing left to resolve.
 	resolutions := needsInputResolutions(rec, next, now)
@@ -1067,8 +1125,22 @@ retryProjection:
 		m.emitTelemetry(ctx, ev)
 	}
 	m.emitNotification(ctx, intent)
+	m.emitNotification(ctx, failureIntent)
 	m.resolveNotifications(ctx, resolutions...)
 	return nil
+}
+
+// turnFailureDetail names the failure a transcript-proven event represents.
+// The detail becomes the notification body, so it is written for the user.
+func turnFailureDetail(event string) (string, bool) {
+	switch event {
+	case ports.ActivityEventStopFailure:
+		return "The agent's turn ended on an error. Open the session to see what happened.", true
+	case ports.ActivityEventInterrupt:
+		return "The agent's turn was interrupted. Open the session to see what happened.", true
+	default:
+		return "", false
+	}
 }
 
 // toolFlight tracks one session's in-flight tool executions and the pending

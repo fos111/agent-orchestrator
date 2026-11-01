@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 	navigate: vi.fn(),
 	clientForHost: vi.fn(),
 	fetchOlder: vi.fn(),
+	restore: vi.fn(),
 }));
 
 function notification(title: string): NotificationDTO {
@@ -98,7 +99,7 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 vi.mock("../hooks/useCloudNotifications", () => ({
 	useCloudNotifications: () => ({ data: { items: [], unreadCount: 0 }, isLoading: false, markAllRead: vi.fn() }),
 }));
-vi.mock("../hooks/useRestoreSession", () => ({ useRestoreSession: () => vi.fn() }));
+vi.mock("../hooks/useRestoreSession", () => ({ useRestoreSession: () => mocks.restore }));
 vi.mock("../lib/host-clients", () => ({ clientForHost: (hostId: string) => mocks.clientForHost(hostId) }));
 
 beforeEach(() => {
@@ -113,6 +114,7 @@ beforeEach(() => {
 	remoteErrorB = false;
 	mocks.markLocal.mockResolvedValue(1);
 	mocks.markRemote.mockResolvedValue({ data: { updatedCount: 1 } });
+	mocks.restore.mockResolvedValue({ status: "success" });
 	mocks.clearRemote.mockResolvedValue({ data: { notification: hostB }, response: { status: 200 } });
 	mocks.clearLocal.mockResolvedValue(local);
 	mocks.clearAllLocal.mockResolvedValue({ clearedCount: 1 });
@@ -286,6 +288,31 @@ it("ignores an older-page response after Clear all", async () => {
 	await userEvent.click(screen.getByRole("button", { name: "Clear all" }));
 	await act(async () => resolveOlder(remotePage([{ ...notification("Cleared older A"), id: "older-notification" }])));
 	expect(screen.queryByText("Cleared older A")).not.toBeInTheDocument();
+});
+
+it("offers Resume for a terminated remote crash row instead of opening it", async () => {
+	remoteTerminatedA = true;
+	remoteA = [{ ...notification("A crash"), type: "session_crashed" }];
+	render(
+		<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+			<TooltipProvider><NotificationCenter /></TooltipProvider>
+		</QueryClientProvider>,
+	);
+	await userEvent.click(screen.getByRole("button", { name: "3 unread notifications" }));
+	const panel = within(await screen.findByRole("dialog", { name: "Notifications" }));
+	const row = panel.getByText("A crash").closest("[role='listitem']") as HTMLElement;
+	expect(within(row).getByRole("button", { name: "This session was archived. Restore it?" })).toBeInTheDocument();
+
+	await userEvent.click(within(row).getByText("A crash body"));
+	expect(mocks.navigate).not.toHaveBeenCalled();
+	expect(mocks.restore).not.toHaveBeenCalled();
+
+	await userEvent.click(within(row).getByRole("button", { name: "This session was archived. Restore it?" }));
+	await waitFor(() => expect(mocks.restore).toHaveBeenCalledWith("same-session", "host-a"));
+	expect(mocks.navigate).toHaveBeenCalledWith({
+		to: "/host/$hostId/project/$projectId/session/$sessionId",
+		params: { hostId: "host-a", projectId: "same-project", sessionId: "same-session" },
+	});
 });
 
 it("does not open or restore remote sessions until their status is trustworthy", async () => {

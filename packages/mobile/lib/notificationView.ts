@@ -6,7 +6,14 @@ import type { MachineAppearance } from "./machineAppearance";
 
 export type NotificationVisual = {
 	/** lucide icon names, drawn from the renderer's own path data. */
-	icon: "message-square-dot" | "git-pull-request-arrow" | "git-merge" | "git-pull-request-closed" | "bell";
+	icon:
+		| "message-square-dot"
+		| "git-pull-request-arrow"
+		| "git-merge"
+		| "git-pull-request-closed"
+		| "circle-alert"
+		| "circle-check"
+		| "bell";
 	color: string;
 	label: string;
 };
@@ -81,10 +88,24 @@ export function notificationVisual(t: Theme, type: string): NotificationVisual {
 			return { icon: "git-pull-request-arrow", color: t.green, label: "Review completed" };
 		case "review_changes_requested":
 			return { icon: "message-square-dot", color: t.amber, label: "Review changes requested" };
+		case "session_crashed":
+			return { icon: "circle-alert", color: t.red, label: "Crashed" };
+		case "session_failed":
+			return { icon: "circle-alert", color: t.red, label: "Failed" };
+		case "session_stuck":
+			return { icon: "message-square-dot", color: t.amber, label: "Stuck" };
+		case "session_done":
+			return { icon: "circle-check", color: t.green, label: "Done" };
 		default:
 			return { icon: "bell", color: t.textTertiary, label: type || "Notification" };
 	}
 }
+
+/**
+ * Session-scoped kinds describe the session itself and carry no PR, so they
+ * open the session. Everything else is a pull-request outcome.
+ */
+const SESSION_SCOPED_TYPES = new Set(["needs_input", "session_crashed", "session_failed", "session_stuck", "session_done"]);
 
 /**
  * Where tapping a notification should land. Mirrors the routing PushManager
@@ -102,7 +123,7 @@ export function notificationTarget(n: { type: string; sessionId?: string; hostId
 	if ((n.type === "review_completed" || n.type === "review_changes_requested") && sessionId && n.prUrl) {
 		return `/review/${encodeURIComponent(sessionId)}?prUrl=${encodeURIComponent(n.prUrl)}&hostId=${hostId}`;
 	}
-	return n.type === "needs_input" && sessionId ? `/session/${encodeURIComponent(sessionId)}?hostId=${hostId}` : `/prs?hostId=${hostId}`;
+	return SESSION_SCOPED_TYPES.has(n.type) && sessionId ? `/session/${encodeURIComponent(sessionId)}?hostId=${hostId}` : `/prs?hostId=${hostId}`;
 }
 
 /** Compact "3m" / "4h" / "2d" stamp. Returns "" for an unparseable timestamp. */
@@ -153,7 +174,7 @@ export function notificationAction(
 			: { kind: "prs" };
 	}
 	// No session to open: a PR outcome still has somewhere useful to go.
-	if (!sessionId) return n.type === "needs_input" ? { kind: "none" } : { kind: "prs" };
+	if (!sessionId) return SESSION_SCOPED_TYPES.has(n.type) ? { kind: "none" } : { kind: "prs" };
 	// The board has not loaded yet, so whether it is terminated is unknown.
 	// Guessing "open" would land on a screen that cannot resolve the session.
 	if (!state.sessionsReady) return { kind: "none" };

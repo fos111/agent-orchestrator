@@ -203,6 +203,20 @@ describe("notification cache helpers", () => {
 		expect(getCachedUnreadCount(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toBe(1);
 	});
 
+	it("does not count a terminal crash among unresolved notifications", () => {
+		const qc = queryClient();
+
+		mergeUnreadNotification(qc, notification());
+		mergeUnreadNotification(
+			qc,
+			notification({ id: "ntf_crash", type: "session_crashed", title: "checkout-flow crashed" }),
+		);
+
+		const unread = qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey);
+		expect(getCachedUnreadCount(unread)).toBe(2);
+		expect(unread?.pages[0]?.unresolvedCount).toBe(1);
+	});
+
 	// Opening the panel acknowledges what it rendered; history keeps the rows.
 	it("clears the acknowledged rows and keeps them in All", () => {
 		const qc = queryClient();

@@ -4,10 +4,40 @@ import { darkTheme } from "./theme";
 
 describe("notificationVisual", () => {
 	it("gives every known type its own label", () => {
-		const labels = ["needs_input", "ready_to_merge", "pr_merged", "pr_closed_unmerged", "review_completed", "review_changes_requested"].map(
-			(t) => notificationVisual(darkTheme, t).label,
-		);
-		expect(new Set(labels).size).toBe(6);
+		const labels = [
+			"needs_input",
+			"ready_to_merge",
+			"pr_merged",
+			"pr_closed_unmerged",
+			"review_completed",
+			"review_changes_requested",
+			"session_crashed",
+			"session_failed",
+			"session_stuck",
+			"session_done",
+		].map((t) => notificationVisual(darkTheme, t).label);
+		expect(new Set(labels).size).toBe(10);
+	});
+
+	// A session that crashed and a session that finished are opposite outcomes,
+	// so they must not share a colour or a glyph with each other.
+	it("separates a crash from a completion", () => {
+		const crashed = notificationVisual(darkTheme, "session_crashed");
+		const done = notificationVisual(darkTheme, "session_done");
+		expect(crashed.color).toBe(darkTheme.red);
+		expect(done.color).toBe(darkTheme.green);
+		expect(crashed.icon).not.toBe(done.icon);
+	});
+
+	// A failed turn is reported as a crash now, so the two share styling. The
+	// legacy stored kind keeps its own label so history rows written before that
+	// change still read as a failure rather than a runtime death.
+	it("keeps the legacy failed label distinct from a crash", () => {
+		const crashed = notificationVisual(darkTheme, "session_crashed");
+		const failed = notificationVisual(darkTheme, "session_failed");
+		expect(crashed.label).toBe("Crashed");
+		expect(failed.label).toBe("Failed");
+		expect(failed.color).toBe(crashed.color);
 	});
 
 	// The renderer draws these with GitHub's own vocabulary, and merged has its own
@@ -47,6 +77,14 @@ describe("notificationTarget", () => {
 			.toBe("/session/abc?hostId=host-a");
 		expect(notificationTarget({ type: "needs_input", sessionId: "abc", hostId: "host-a" }, new Set(["host-a", "host-b"])))
 			.toBe("/session/abc?hostId=host-a");
+	});
+
+	// Session outcomes carry no PR, so the PRs tab would be a dead end.
+	it("opens the session for a session outcome too", () => {
+		for (const type of ["session_crashed", "session_failed", "session_stuck", "session_done"]) {
+			expect(notificationTarget({ type, sessionId: "abc", hostId: "host-a" }, "host-a"))
+				.toBe("/session/abc?hostId=host-a");
+		}
 	});
 
 	it("sends legacy and other-machine pushes to the board", () => {
@@ -181,6 +219,15 @@ describe("notificationAction", () => {
 	// ...but a finished PR is still worth reading, so termination does not gate it.
 	it("still opens a terminated session behind a PR outcome", () => {
 		for (const type of ["ready_to_merge", "pr_merged", "pr_closed_unmerged"]) {
+			expect(notificationAction({ type, sessionId: "s1" }, { terminated: true, sessionsReady: true }))
+				.toEqual({ kind: "open", sessionId: "s1" });
+		}
+	});
+
+	// Same reasoning for a session outcome: the work already ended, so there is
+	// nothing to resume and the row stays readable.
+	it("still opens a terminated session behind a session outcome", () => {
+		for (const type of ["session_crashed", "session_failed", "session_stuck", "session_done"]) {
 			expect(notificationAction({ type, sessionId: "s1" }, { terminated: true, sessionsReady: true }))
 				.toEqual({ kind: "open", sessionId: "s1" });
 		}

@@ -542,10 +542,52 @@ func (m *Manager) setProvisionState(
 	state domain.SessionProvisionState,
 	message string,
 ) (domain.SessionRecord, error) {
+	// Only the transition into failed is an outcome the user must hear about.
+	// Read first so a repeated failed write (a retried cleanup, a second boot's
+	// sweep) does not buzz twice for the same dead start.
+	wasFailed := false
+	if state == domain.SessionProvisionFailed {
+		if prev, ok, err := m.store.GetSession(ctx, id); err == nil && ok {
+			wasFailed = prev.ProvisionState == domain.SessionProvisionFailed
+		}
+	}
 	if _, err := m.store.SetSessionProvisionState(ctx, id, state, message, m.clock()); err != nil {
 		return domain.SessionRecord{}, err
 	}
-	return m.getRecord(ctx, id)
+	rec, err := m.getRecord(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	if state == domain.SessionProvisionFailed && !wasFailed {
+		m.notifyProvisionFailed(ctx, rec, message)
+	}
+	return rec, nil
+}
+
+// notifyProvisionFailed publishes a start that could not complete. Best effort:
+// the row is already durable, so a notification failure only loses the ping.
+// It rides the verified crash alert: a session that never finished starting is
+// the same "the agent ran into a problem" outcome to the user, and the detail
+// carries the start error.
+func (m *Manager) notifyProvisionFailed(ctx context.Context, rec domain.SessionRecord, message string) {
+	if m.notifications == nil || rec.IsTerminated || rec.IsTaskPreparation {
+		return
+	}
+	intent := ports.NotificationIntent{
+		Type:               domain.NotificationSessionCrashed,
+		SessionID:          rec.ID,
+		ProjectID:          rec.ProjectID,
+		CreatedAt:          m.clock(),
+		SessionDisplayName: rec.DisplayName,
+		Detail:             message,
+		// The failed row is one transition; UpdatedAt pins dedupe to it while a
+		// later retry that fails again writes a new timestamp and buzzes anew.
+		SourceKey: fmt.Sprintf("session_crashed:%s:provision:%d", rec.ID, rec.UpdatedAt.UnixNano()),
+	}
+	// The write already happened, so a cancelled request must not swallow it.
+	if err := m.notifications.Notify(context.WithoutCancel(ctx), intent); err != nil {
+		m.logger.Warn("session: failed-start notification failed", "session", rec.ID, "err", err)
+	}
 }
 
 // FailInterruptedProvisioning marks sessions whose background start did not

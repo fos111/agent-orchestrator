@@ -9,17 +9,33 @@
  */
 
 /** The notification types defined by `backend/internal/domain/notification.go`. */
-export type NotificationType = "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged";
+export type NotificationType =
+	| "needs_input"
+	| "ready_to_merge"
+	| "pr_merged"
+	| "pr_closed_unmerged"
+	| "review_completed"
+	| "review_changes_requested"
+	| "session_crashed"
+	| "session_failed"
+	| "session_stuck"
+	| "session_done";
 
 /**
  * Whether to fire the Windows/Linux taskbar flash. Restricted to the
  * actionable types: a merged or closed PR is worth a toast, but should not
- * demand attention as insistently as an agent blocked waiting on the user.
+ * demand attention as insistently as an agent blocked waiting on the user or a
+ * runtime that just crashed.
  *
  * The macOS dock bounce is deliberately NOT gated by this allowlist — every
  * notification bounces there, with urgency carried by {@link dockBounceType}.
  */
-const ATTENTION_TYPES: ReadonlySet<string> = new Set<NotificationType>(["needs_input", "ready_to_merge"]);
+const ATTENTION_TYPES: ReadonlySet<string> = new Set<NotificationType>([
+	"needs_input",
+	"ready_to_merge",
+	"session_crashed",
+	"session_failed",
+]);
 
 /** Whether this notification type should flash the Windows/Linux taskbar. */
 export function shouldSignalAttention(type: string | undefined): boolean {
@@ -79,11 +95,12 @@ export function toastSilent(
 }
 
 /**
- * macOS dock bounce style. A blocked agent waiting on the user keeps bouncing
- * until the app is activated ("critical"); anything else bounces once
- * ("informational"). This is where urgency lives, so every notification can
- * signal without a merged PR nagging as insistently as a blocked agent.
+ * macOS dock bounce style. A blocked agent waiting on the user — or a runtime
+ * that just crashed — keeps bouncing until the app is activated ("critical");
+ * anything else bounces once ("informational"). This is where urgency lives, so
+ * every notification can signal without a merged PR nagging as insistently as a
+ * blocked agent.
  */
 export function dockBounceType(type: string | undefined): "critical" | "informational" {
-	return type === "needs_input" ? "critical" : "informational";
+	return type === "needs_input" || type === "session_crashed" || type === "session_failed" ? "critical" : "informational";
 }

@@ -26,6 +26,14 @@ type RuntimeFacts struct {
 	LaunchID   string
 }
 
+// Activity events that prove an agent turn did not finish successfully. The
+// failed-turn observer reports them from the provider transcript; harnesses
+// with their own failure hook report the same names.
+const (
+	ActivityEventStopFailure = "stop-failure"
+	ActivityEventInterrupt   = "interrupt"
+)
+
 // ActivitySignal is pushed by the agent hooks. Only a Valid activity state is
 // authoritative; a stale/absent one is ignored rather than read as idleness.
 // AgentSessionID may be supplied independently by metadata-only hooks such as
@@ -49,9 +57,15 @@ type ActivitySignal struct {
 	// the existing generic hook contract; socket reporters always set it.
 	ExpectedHarness domain.AgentHarness
 	Event           string
-	ToolName        string
-	ToolUseID       string
-	SubagentID      string
+	// Detail is the producer's own account of a failure event, e.g. the ACP
+	// `session/prompt` error a chat controller saw. It becomes the notification
+	// body, so it says what actually went wrong instead of a generic sentence.
+	// Lifecycle only reads it for a failure event and never stores it as a session
+	// fact.
+	Detail     string
+	ToolName   string
+	ToolUseID  string
+	SubagentID string
 	// RunningSubagentIDs is Claude's authoritative parent task snapshot.
 	// Codex provides child start/stop events instead and leaves this nil.
 	RunningSubagentIDs *[]string

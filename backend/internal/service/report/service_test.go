@@ -2,10 +2,12 @@ package report
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 type fakeStore struct {
@@ -132,5 +134,87 @@ func TestCreateShowsEachReportedArtifactAfterTheReportIsStored(t *testing.T) {
 		SessionID: "ao-7", Outputs: []domain.ReportOutput{{Kind: domain.ReportOutputArtifact, Reference: "report.html"}},
 	}); err == nil || len(calls) != 0 {
 		t.Fatalf("unknown session: err = %v, recorded %q", err, calls)
+	}
+}
+
+type notificationCalls struct {
+	intents []ports.NotificationIntent
+	err     error
+}
+
+func (n *notificationCalls) Notify(_ context.Context, intent ports.NotificationIntent) error {
+	n.intents = append(n.intents, intent)
+	return n.err
+}
+
+// A worker's done/stuck report is the only report state the user hears about
+// away from the app: checkpoints are routine and needs_input already notifies
+// through the session activity transition.
+func TestCreateNotifiesOnlyOnDoneAndStuck(t *testing.T) {
+	now := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name  string
+		state domain.ReportState
+		want  domain.NotificationType
+	}{
+		{name: "done", state: domain.ReportDone, want: domain.NotificationSessionDone},
+		{name: "stuck", state: domain.ReportStuck, want: domain.NotificationSessionStuck},
+		{name: "checkpoint stays quiet", state: domain.ReportCheckpoint},
+		{name: "needs input stays quiet", state: domain.ReportNeedsInput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeStore{ok: true, session: domain.SessionRecord{
+				ID: "ao-7", ProjectID: "ao", Kind: domain.KindWorker, DisplayName: "Checkout flow",
+			}}
+			notes := &notificationCalls{}
+			_, err := New(Deps{
+				Store: st, Notifications: notes,
+				Now:   func() time.Time { return now },
+				NewID: func() string { return "rpt_1" },
+			}).Create(context.Background(), CreateInput{SessionID: "ao-7", State: tc.state, Note: "worker words"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if len(notes.intents) != 0 {
+					t.Fatalf("intents = %+v, want none", notes.intents)
+				}
+				return
+			}
+			if len(notes.intents) != 1 {
+				t.Fatalf("intents = %+v, want exactly one", notes.intents)
+			}
+			got := notes.intents[0]
+			if got.Type != tc.want {
+				t.Fatalf("type = %q, want %q", got.Type, tc.want)
+			}
+			if got.SessionID != "ao-7" || got.ProjectID != "ao" {
+				t.Fatalf("intent = %+v", got)
+			}
+			if got.SessionDisplayName != "Checkout flow" {
+				t.Fatalf("display name = %q", got.SessionDisplayName)
+			}
+			if got.Detail != "worker words" {
+				t.Fatalf("detail = %q, want the worker's own note", got.Detail)
+			}
+			if want := string(tc.want) + ":rpt_1"; got.SourceKey != want {
+				t.Fatalf("sourceKey = %q, want %q", got.SourceKey, want)
+			}
+		})
+	}
+}
+
+// The report is already durable when the notification is published, so a
+// publish failure must not turn a committed report into a failed request.
+func TestCreateIgnoresNotificationFailure(t *testing.T) {
+	st := &fakeStore{ok: true, session: domain.SessionRecord{ID: "ao-7", ProjectID: "ao", Kind: domain.KindWorker}}
+	notes := &notificationCalls{err: errors.New("push down")}
+	if _, err := New(Deps{Store: st, Notifications: notes}).Create(context.Background(), CreateInput{
+		SessionID: "ao-7", State: domain.ReportDone, Note: "done",
+	}); err != nil {
+		t.Fatalf("Create() = %v, want the report to survive a notification failure", err)
+	}
+	if len(notes.intents) != 1 {
+		t.Fatalf("intents = %+v, want the publish to have been attempted", notes.intents)
 	}
 }

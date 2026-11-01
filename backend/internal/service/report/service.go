@@ -3,6 +3,7 @@ package report
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // Store is the report service's persistence and ownership boundary.
@@ -33,22 +35,32 @@ type ArtifactRecorder interface {
 	RecordReportedArtifact(ctx context.Context, id domain.SessionID, reference string)
 }
 
-// Service validates and creates durable worker reports.
-type Service struct {
-	store     Store
-	now       func() time.Time
-	newID     func() string
-	onCreated func(domain.ReportRecord)
-	artifacts ArtifactRecorder
+// NotificationWriter turns a worker's own outcome report into a notification the
+// user sees away from the app. It is optional and best effort: a push that fails
+// must never fail the report the worker already committed, and must never be
+// retried by re-creating it.
+type NotificationWriter interface {
+	Notify(ctx context.Context, intent ports.NotificationIntent) error
 }
 
-// Deps configures a Service. Artifacts is optional.
+// Service validates and creates durable worker reports.
+type Service struct {
+	store         Store
+	now           func() time.Time
+	newID         func() string
+	onCreated     func(domain.ReportRecord)
+	artifacts     ArtifactRecorder
+	notifications NotificationWriter
+}
+
+// Deps configures a Service. Artifacts and Notifications are optional.
 type Deps struct {
-	Store     Store
-	Now       func() time.Time
-	NewID     func() string
-	OnCreated func(domain.ReportRecord)
-	Artifacts ArtifactRecorder
+	Store         Store
+	Now           func() time.Time
+	NewID         func() string
+	OnCreated     func(domain.ReportRecord)
+	Artifacts     ArtifactRecorder
+	Notifications NotificationWriter
 }
 
 // New constructs a report Service.
@@ -59,7 +71,14 @@ func New(d Deps) *Service {
 	if d.NewID == nil {
 		d.NewID = func() string { return "rpt_" + uuid.NewString() }
 	}
-	return &Service{store: d.Store, now: d.Now, newID: d.NewID, onCreated: d.OnCreated, artifacts: d.Artifacts}
+	return &Service{
+		store:         d.Store,
+		now:           d.Now,
+		newID:         d.NewID,
+		onCreated:     d.OnCreated,
+		artifacts:     d.Artifacts,
+		notifications: d.Notifications,
+	}
 }
 
 // ListProject returns persisted report facts ordered by created_at then id,
@@ -149,5 +168,46 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (domain.ReportR
 			}
 		}
 	}
+	s.notifyOutcome(ctx, session, created)
 	return created, nil
+}
+
+// notifyOutcome publishes the two worker outcomes worth a push. It is
+// deliberately silent about the other states: checkpoints are routine, and
+// needs_input already notifies through the session's activity transition, so
+// notifying here as well would double-buzz the user for one pause.
+func (s *Service) notifyOutcome(ctx context.Context, session domain.SessionRecord, rec domain.ReportRecord) {
+	if s.notifications == nil {
+		return
+	}
+	var typ domain.NotificationType
+	switch rec.State {
+	case domain.ReportDone:
+		typ = domain.NotificationSessionDone
+	case domain.ReportStuck:
+		typ = domain.NotificationSessionStuck
+	default:
+		return
+	}
+	detail := rec.Note
+	if detail == "" {
+		detail = rec.Message
+	}
+	intent := ports.NotificationIntent{
+		Type:               typ,
+		SessionID:          rec.SessionID,
+		ProjectID:          rec.ProjectID,
+		CreatedAt:          rec.CreatedAt,
+		SessionDisplayName: session.DisplayName,
+		Detail:             detail,
+		// One notification per report: re-delivering the same report must not
+		// buzz twice, while a later report of the same kind is a new fact and
+		// does buzz. Report ids are unique, so this is stable across restarts.
+		SourceKey: string(typ) + ":" + rec.ID,
+	}
+	// The report is already committed, so a disconnect must not swallow the
+	// notification: keep the values, drop the cancellation.
+	if err := s.notifications.Notify(context.WithoutCancel(ctx), intent); err != nil {
+		slog.Default().Warn("report: notification failed", "session", rec.SessionID, "type", typ, "err", err)
+	}
 }

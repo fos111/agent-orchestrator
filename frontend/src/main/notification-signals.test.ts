@@ -10,7 +10,18 @@ import {
 	type NotificationType,
 } from "./notification-signals";
 
-const ALL_TYPES: NotificationType[] = ["needs_input", "ready_to_merge", "pr_merged", "pr_closed_unmerged"];
+const ALL_TYPES: NotificationType[] = [
+	"needs_input",
+	"ready_to_merge",
+	"pr_merged",
+	"pr_closed_unmerged",
+	"review_completed",
+	"review_changes_requested",
+	"session_crashed",
+	"session_failed",
+	"session_stuck",
+	"session_done",
+];
 
 describe("shouldToast", () => {
 	it("fires a toast for every backend notification type", () => {
@@ -32,9 +43,19 @@ describe("shouldSignalAttention", () => {
 		expect(shouldSignalAttention("ready_to_merge")).toBe(true);
 	});
 
+	it("flashes the taskbar for a crashed session like a blocked agent", () => {
+		expect(shouldSignalAttention("session_crashed")).toBe(true);
+	});
+
+	it("flashes the taskbar for a failed session too", () => {
+		expect(shouldSignalAttention("session_failed")).toBe(true);
+	});
+
 	it("does not flash the taskbar for informational PR outcomes", () => {
 		expect(shouldSignalAttention("pr_merged")).toBe(false);
 		expect(shouldSignalAttention("pr_closed_unmerged")).toBe(false);
+		expect(shouldSignalAttention("review_completed")).toBe(false);
+		expect(shouldSignalAttention("review_changes_requested")).toBe(false);
 	});
 
 	it("does not signal for unknown or missing types", () => {
@@ -98,8 +119,16 @@ describe("dockBounceType", () => {
 		expect(dockBounceType("needs_input")).toBe("critical");
 	});
 
+	it("bounces critically for a crashed session, matching needs_input urgency", () => {
+		expect(dockBounceType("session_crashed")).toBe("critical");
+	});
+
+	it("bounces critically for a failed session too", () => {
+		expect(dockBounceType("session_failed")).toBe("critical");
+	});
+
 	it("bounces once for the other backend types", () => {
-		for (const type of ALL_TYPES.filter((t) => t !== "needs_input")) {
+		for (const type of ALL_TYPES.filter((t) => t !== "needs_input" && t !== "session_crashed" && t !== "session_failed")) {
 			expect(dockBounceType(type)).toBe("informational");
 		}
 	});

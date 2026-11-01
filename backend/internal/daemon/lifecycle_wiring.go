@@ -323,6 +323,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Workspace:           ws,
 		Store:               store,
 		Messenger:           messenger,
+		Notifications:       notifications,
 		Chat:                chat,
 		Defaults:            defaults,
 		Lifecycle:           lcm,

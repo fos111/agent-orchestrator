@@ -9,8 +9,13 @@ Use the notification center to review new and older alerts, open the related ses
 
 - browse one newest-first feed and load older records by scrolling;
 - open the related session or pull request;
+- resume a crashed session from its alert;
 - open the panel to mark loaded unread records as read;
 - catch up through paginated history after the app reconnects.
+
+## Crash recovery
+
+A crash alert names the session whose runtime stopped unexpectedly. When the crashed session is terminated, the alert offers **Resume**; choosing it restores the session and then opens it. Resume is always explicit — AO never restarts a crashed session on its own.
 
 Electron app toasts are a presentation of the same durable records while the desktop is running. There is no `ao notify`, `ao setup`, routing preset, JSONL notification store, or external notifier configuration in the current CLI.
 

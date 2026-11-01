@@ -21,13 +21,33 @@ const (
 	NotificationReviewCompleted NotificationType = "review_completed"
 	// NotificationReviewChangesRequested means an AO reviewer found changes to make.
 	NotificationReviewChangesRequested NotificationType = "review_changes_requested"
+	// NotificationSessionCrashed means the session could not continue: its
+	// runtime died unexpectedly, its agent turn ended on an error or was
+	// interrupted, or it never finished starting. All of those are the same
+	// user-visible outcome — the agent ran into a problem — so they share this
+	// one verified alert instead of fanning out into separate, easy-to-miss
+	// kinds. It describes something that already happened, so it is terminal.
+	NotificationSessionCrashed NotificationType = "session_crashed"
+	// NotificationSessionFailed is a session-scoped terminal kind kept valid for
+	// rows written by earlier builds of this feature. AO no longer produces it:
+	// a failed turn or a failed start is reported as NotificationSessionCrashed
+	// so the user always gets the same crash alert they already trust.
+	NotificationSessionFailed NotificationType = "session_failed"
+	// NotificationSessionStuck means a worker reported that it cannot make
+	// progress (`ao report --stuck`). It is the agent's own escalation, not an
+	// inference: a session that merely looks stalled is never guessed at.
+	NotificationSessionStuck NotificationType = "session_stuck"
+	// NotificationSessionDone means a worker reported that its work is finished
+	// (`ao report --done`).
+	NotificationSessionDone NotificationType = "session_done"
 )
 
 // Valid reports whether t is one of the v1 notification kinds.
 func (t NotificationType) Valid() bool {
 	switch t {
 	case NotificationNeedsInput, NotificationReadyToMerge, NotificationPRMerged, NotificationPRClosedUnmerged,
-		NotificationReviewCompleted, NotificationReviewChangesRequested:
+		NotificationReviewCompleted, NotificationReviewChangesRequested,
+		NotificationSessionCrashed, NotificationSessionFailed, NotificationSessionStuck, NotificationSessionDone:
 		return true
 	default:
 		return false
@@ -36,8 +56,9 @@ func (t NotificationType) Valid() bool {
 
 // NeedsResolution reports whether t describes an issue that stays open until
 // something changes (an agent waiting on the user, a PR waiting on a merge).
-// Terminal facts — a PR that merged or closed — describe something that already
-// happened, so they are surfaced once as unseen and never held as unresolved.
+// Terminal facts — a PR that merged or closed, a session that crashed, failed,
+// got stuck, or finished — describe something that already happened, so they
+// are surfaced once as unseen and never held as unresolved.
 func (t NotificationType) NeedsResolution() bool {
 	return t == NotificationNeedsInput || t == NotificationReadyToMerge
 }

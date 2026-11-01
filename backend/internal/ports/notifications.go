@@ -20,12 +20,16 @@ type NotificationIntent struct {
 
 	// Enrichment hints. These avoid storage reads on the hot path.
 	SessionDisplayName string
-	PRNumber           int
-	PRTitle            string
-	PRSourceBranch     string
-	PRTargetBranch     string
-	Provider           string
-	Repo               string
+	// Detail is what the producer itself said about the event, e.g. the note a
+	// worker attached to `ao report --done`. It becomes the notification body,
+	// so the user reads the worker's own words instead of a restatement.
+	Detail         string
+	PRNumber       int
+	PRTitle        string
+	PRSourceBranch string
+	PRTargetBranch string
+	Provider       string
+	Repo           string
 }
 
 // NotificationResolution is the lifecycle-to-notification-producer contract for

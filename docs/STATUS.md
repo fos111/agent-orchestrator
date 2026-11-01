@@ -109,7 +109,11 @@ surface (`npm run sqlc`, `npm run api`).
   cursor-paginated read/unread history, live notification stream, and read
   acknowledgement API. The desktop presents one newest-first feed; opening it
   acknowledges loaded unread items. It has clear-one/clear-all controls, not
-  separate Unread/All tabs or per-item mark-read buttons.
+  separate Unread/All tabs or per-item mark-read buttons. Session outcomes —
+  `session_crashed` (AO confirmed the session's runtime died on its own),
+  `session_stuck`, and `session_done` (both from the worker's own `ao report`) —
+  are surfaced the same way. They are terminal facts like a merged PR, so they
+  are seen once and never held in the unresolved set.
 - SCM observer (`internal/observe/scm`) wired into the daemon: GitHub and GitLab providers; the GitHub path has
   lazy/non-blocking auth, per-PR polling with ETag guards and semantic diffing,
   feeding PR facts into lifecycle, which sends agent nudges for CI failures,
