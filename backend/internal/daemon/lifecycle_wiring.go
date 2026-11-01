@@ -228,6 +228,9 @@ type sessionLifecycle interface {
 	ObserveChatVersionSwitch(id domain.SessionID, version, result string)
 	MarkHarnessUpdated(ctx context.Context, harness domain.AgentHarness, version string, at time.Time) error
 	CountStaleBinarySessions(ctx context.Context) (map[domain.AgentHarness]int64, error)
+	// DagNodeSeeds plans a DAG run's node records without writing them; the DAG
+	// run service persists the graph in one transaction.
+	DagNodeSeeds(ctx context.Context, projectID domain.ProjectID, nodes []domain.DagNodeSpec) ([]domain.DagNodeSeed, error)
 	RestoreAll(ctx context.Context) error
 	WaitBackgroundWorkers(ctx context.Context) error
 	WaitAgentSwitchWorkers(ctx context.Context) error

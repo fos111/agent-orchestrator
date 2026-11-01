@@ -32,6 +32,7 @@ type APIDeps struct {
 	AgentAccounts      controllers.AgentAccountService
 	Projects           projectsvc.Manager
 	Sessions           controllers.SessionService
+	DagRuns            controllers.DagRunService
 	ArtifactVersions   controllers.ArtifactVersionService
 	Automations        controllers.AutomationService
 	DesktopWorkspaces  controllers.DesktopWorkspaceService
@@ -136,6 +137,7 @@ type API struct {
 	agentAccounts *controllers.AgentAccountsController
 	projects      *controllers.ProjectsController
 	sessions      *controllers.SessionsController
+	dagRuns       *controllers.DagRunsController
 	automations   *controllers.AutomationsController
 	desktop       *controllers.DesktopWorkspaceController
 	usage         *controllers.UsageController
@@ -185,6 +187,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
+		dagRuns: &controllers.DagRunsController{Svc: deps.DagRuns},
 		sessions: &controllers.SessionsController{
 			Svc:                      deps.Sessions,
 			Projects:                 deps.Projects,
@@ -323,6 +326,7 @@ func (a *API) Register(root chi.Router) {
 			a.agentAccounts.Register(r)
 			a.projects.Register(r)
 			a.sessions.Register(r)
+			a.dagRuns.Register(r)
 			a.automations.Register(r)
 			a.desktop.Register(r)
 			a.usage.Register(r)

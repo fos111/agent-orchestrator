@@ -1203,6 +1203,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dag-runs/{dagRunId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one DAG run's derived status and nodes */
+        get: operations["getDagRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dag-runs/{dagRunId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel a DAG run's queued and blocked nodes */
+        post: operations["cancelDagRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/desktop/sessions/{sessionId}/artifacts": {
         parameters: {
             query?: never;
@@ -1870,6 +1904,24 @@ export interface paths {
         put?: never;
         /** Create a cue for a project */
         post: operations["createCue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/dag-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a project's DAG runs */
+        get: operations["listDagRuns"];
+        put?: never;
+        /** Submit a DAG run atomically */
+        post: operations["createDagRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5053,6 +5105,9 @@ export interface components {
             /** @enum {string} */
             transport: "electron-webcontents-debugger" | "chrome-extension";
         };
+        CancelDagRunRequest: {
+            includeActive?: boolean;
+        };
         CancelReviewResponse: {
             reviewerHandleId: string;
             reviews: components["schemas"]["PRReviewState"][];
@@ -5511,6 +5566,8 @@ export interface components {
             completedAt?: null | string;
             /** Format: date-time */
             createdAt: string;
+            dagNodeId?: null | string;
+            dagRunId?: null | string;
             dependents?: string[];
             dependsOn?: components["schemas"]["SessionDependencyStatus"][];
             displayName?: string;
@@ -5938,6 +5995,22 @@ export interface components {
         CreateConversationSideChatResponse: {
             side: components["schemas"]["SideConversation"];
         };
+        CreateDagRunNode: {
+            dependsOn?: string[];
+            /** @enum {string} */
+            harness?: "claude-code" | "codex" | "aider" | "opencode" | "opencode-v2" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "gemini" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "muse" | "kiro" | "kilocode" | "vibe" | "pi" | "kimchi" | "omp" | "fx" | "prime-agent" | "autohand" | "unreal-agent" | "codewhale" | "mimo-code" | "deepseek-harness" | "openhands" | "command-code" | "memcode" | "hermes";
+            id: string;
+            name?: string;
+            prompt: string;
+            /** @enum {string} */
+            requestedOutput?: "artifact";
+            /** @enum {string} */
+            requiredState?: "ready" | "merged" | "completed";
+        };
+        CreateDagRunRequest: {
+            name: string;
+            nodes: components["schemas"]["CreateDagRunNode"][];
+        };
         CreateReportRequest: {
             message?: string;
             note?: string;
@@ -5973,6 +6046,45 @@ export interface components {
             type: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        DagRunCountsResponse: {
+            blocked: number;
+            cancelled: number;
+            completed: number;
+            failed: number;
+            queued: number;
+            running: number;
+            total: number;
+        };
+        DagRunEnvelope: {
+            run: components["schemas"]["DagRunResponse"];
+        };
+        DagRunNodeResponse: {
+            blockedReason?: string;
+            /** Format: date-time */
+            createdAt: string;
+            dependsOn?: string[];
+            id: string;
+            name: string;
+            sessionId: null | string;
+            /** @enum {string} */
+            status: "queued" | "blocked" | "running" | "completed" | "failed" | "cancelled";
+        };
+        DagRunResponse: {
+            /** Format: date-time */
+            cancelRequestedAt?: null | string;
+            /** Format: date-time */
+            completedAt?: null | string;
+            counts: components["schemas"]["DagRunCountsResponse"];
+            /** Format: date-time */
+            createdAt: string;
+            id: string;
+            name: string;
+            nodes: components["schemas"]["DagRunNodeResponse"][];
+            projectId: string;
+            rootSessionId?: null | string;
+            /** @enum {string} */
+            status: "pending" | "running" | "completed" | "failed" | "cancelled";
         };
         DegradedProject: {
             id: string;
@@ -6316,6 +6428,9 @@ export interface components {
         };
         ListCuesResponse: {
             cues: components["schemas"]["CueResponse"][];
+        };
+        ListDagRunsResponse: {
+            runs: components["schemas"]["DagRunResponse"][];
         };
         ListDirsResponse: {
             /** @description Subdirectories, excluding dotted names. */
@@ -6910,6 +7025,7 @@ export interface components {
             defaultDependencyState?: string;
             maxActivePerTeam?: number;
             maxActiveSessions?: number;
+            maxDagNodesPerRun?: number;
             maxDependenciesPerSession?: number;
         };
         SendConversationMessageRequest: {
@@ -12217,6 +12333,128 @@ export interface operations {
             };
         };
     };
+    getDagRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description DAG run identifier, e.g. dag-<uuid>. */
+                dagRunId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DagRunEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    cancelDagRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description DAG run identifier, e.g. dag-<uuid>. */
+                dagRunId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CancelDagRunRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DagRunEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     getDesktopSessionArtifacts: {
         parameters: {
             query?: never;
@@ -14436,6 +14674,110 @@ export interface operations {
             };
             /** @description Request Entity Too Large */
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listDagRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project that owns the DAG run. */
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListDagRunsResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    createDagRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project that owns the DAG run. */
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDagRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DagRunEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

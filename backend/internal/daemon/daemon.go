@@ -63,6 +63,7 @@ import (
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/computeruse"
 	cuesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/cue"
+	dagrun "github.com/aoagents/agent-orchestrator/backend/internal/service/dagrun"
 	devimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/devimport"
 	fsbrowsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/fsbrowser"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
@@ -593,6 +594,16 @@ func Run(buildVersion string) error {
 		},
 	})
 	sessMgr = wiredSessMgr
+	// A DAG run is a coordinator over parentless worker sessions: it plans nodes
+	// through the session manager, persists them atomically, and lets the
+	// dependency scheduler admit the queued roots.
+	dagRuns := dagrun.New(dagrun.Deps{
+		Store:     store,
+		Snapshots: sessionSvc,
+		Planner:   wiredSessMgr,
+		Waker:     sessionScheduler,
+		Sessions:  sessionSvc,
+	})
 	if switcher, ok := wiredSessMgr.(chatsvc.TerminalProviderSwitcher); ok {
 		chatSvc.SetTerminalProviderSwitcher(switcher)
 	}
@@ -1039,6 +1050,7 @@ func Run(buildVersion string) error {
 		Installer:          systemInstall,
 		ComputerUse:        computerUse,
 		Sessions:           sessionSvc,
+		DagRuns:            dagRuns,
 		Automations:        automationSvc,
 		DesktopWorkspaces:  sessionSvc,
 		PRs:                prActions,

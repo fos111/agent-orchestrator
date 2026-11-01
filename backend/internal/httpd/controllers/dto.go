@@ -601,6 +601,94 @@ type AdmitSessionRequest struct {
 	Force bool `json:"force,omitempty"`
 }
 
+// CreateDagRunRequest is the body of POST
+// /api/v1/projects/{projectId}/dag-runs. Every node becomes a parentless
+// worker session; the run is their coordinator.
+type CreateDagRunRequest struct {
+	Name  string             `json:"name" maxLength:"100"`
+	Nodes []CreateDagRunNode `json:"nodes"`
+}
+
+// CreateDagRunNode is one submitted DAG node.
+type CreateDagRunNode struct {
+	ID      domain.DagNodeID    `json:"id" maxLength:"64"`
+	Name    string              `json:"name,omitempty" maxLength:"100"`
+	Prompt  string              `json:"prompt" maxLength:"16384"`
+	Harness domain.AgentHarness `json:"harness,omitempty" enum:"claude-code,codex,aider,opencode,opencode-v2,grok,droid,amp,agy,crush,cursor,qwen,gemini,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,fx,prime-agent,autohand,unreal-agent,codewhale,mimo-code,deepseek-harness,openhands,command-code,memcode,hermes"`
+	// DependsOn lists node ids in the same run that must reach RequiredState
+	// before this node may be admitted.
+	DependsOn []domain.DagNodeID `json:"dependsOn,omitempty"`
+	// RequiredState applies to every DependsOn entry. Empty follows the node's
+	// output-type default.
+	RequiredState   domain.DagRequiredState `json:"requiredState,omitempty" enum:"ready,merged,completed"`
+	RequestedOutput domain.RequestedOutput  `json:"requestedOutput,omitempty" enum:"artifact"`
+}
+
+// CancelDagRunRequest is the optional body of POST
+// /api/v1/dag-runs/{dagRunId}/cancel. IncludeActive also kills nodes that were
+// already admitted; the default leaves them running.
+type CancelDagRunRequest struct {
+	IncludeActive bool `json:"includeActive,omitempty"`
+}
+
+// DagRunProjectIDParam is the {projectId} path parameter for the project-scoped
+// DAG run routes.
+type DagRunProjectIDParam struct {
+	ProjectID string `path:"projectId" description:"Project that owns the DAG run."`
+}
+
+// DagRunIDParam is the {dagRunId} path parameter.
+type DagRunIDParam struct {
+	DagRunID string `path:"dagRunId" description:"DAG run identifier, e.g. dag-<uuid>."`
+}
+
+// DagRunCountsResponse summarizes a run's nodes by derived status.
+type DagRunCountsResponse struct {
+	Total     int `json:"total"`
+	Queued    int `json:"queued"`
+	Blocked   int `json:"blocked"`
+	Running   int `json:"running"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
+}
+
+// DagRunNodeResponse is one node of a run in the read model.
+type DagRunNodeResponse struct {
+	ID            domain.DagNodeID     `json:"id"`
+	SessionID     domain.SessionID     `json:"sessionId"`
+	Name          string               `json:"name"`
+	Status        domain.DagNodeStatus `json:"status" enum:"queued,blocked,running,completed,failed,cancelled"`
+	BlockedReason string               `json:"blockedReason,omitempty"`
+	DependsOn     []domain.DagNodeID   `json:"dependsOn,omitempty"`
+	CreatedAt     time.Time            `json:"createdAt"`
+}
+
+// DagRunResponse is one run with its derived status and counts.
+type DagRunResponse struct {
+	ID                domain.DagRunID      `json:"id"`
+	ProjectID         domain.ProjectID     `json:"projectId"`
+	RootSessionID     *domain.SessionID    `json:"rootSessionId,omitempty"`
+	Name              string               `json:"name"`
+	Status            domain.DagRunStatus  `json:"status" enum:"pending,running,completed,failed,cancelled"`
+	CancelRequestedAt *time.Time           `json:"cancelRequestedAt,omitempty"`
+	CreatedAt         time.Time            `json:"createdAt"`
+	CompletedAt       *time.Time           `json:"completedAt,omitempty"`
+	Counts            DagRunCountsResponse `json:"counts"`
+	Nodes             []DagRunNodeResponse `json:"nodes"`
+}
+
+// DagRunEnvelope is the {run} body returned by run reads and submission.
+type DagRunEnvelope struct {
+	Run DagRunResponse `json:"run"`
+}
+
+// ListDagRunsResponse is the body of GET
+// /api/v1/projects/{projectId}/dag-runs.
+type ListDagRunsResponse struct {
+	Runs []DagRunResponse `json:"runs"`
+}
+
 // AttachmentInput is one file attached to a spawn, delegate, stage, or send
 // request.
 type AttachmentInput struct {

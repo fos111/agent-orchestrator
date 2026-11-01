@@ -349,6 +349,21 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersListSessionsResponse":                     "ListSessionsResponse",
 	"ControllersSessionArchiveSummary":                    "SessionArchiveSummary",
 	"ControllersSpawnSessionRequest":                      "SpawnSessionRequest",
+	"ControllersCreateDagRunRequest":                      "CreateDagRunRequest",
+	"ControllersCreateDagRunNode":                         "CreateDagRunNode",
+	"ControllersCancelDagRunRequest":                      "CancelDagRunRequest",
+	"ControllersDagRunProjectIDParam":                     "DagRunProjectIDParam",
+	"ControllersDagRunIDParam":                            "DagRunIDParam",
+	"ControllersDagRunCountsResponse":                     "DagRunCountsResponse",
+	"ControllersDagRunNodeResponse":                       "DagRunNodeResponse",
+	"ControllersDagRunResponse":                           "DagRunResponse",
+	"ControllersDagRunEnvelope":                           "DagRunEnvelope",
+	"ControllersListDagRunsResponse":                      "ListDagRunsResponse",
+	"DomainDagRunID":                                      "DagRunID",
+	"DomainDagRunStatus":                                  "DagRunStatus",
+	"DomainDagNodeID":                                     "DagNodeID",
+	"DomainDagNodeStatus":                                 "DagNodeStatus",
+	"DomainDagRequiredState":                              "DagRequiredState",
 	"ControllersSessionDependencyInput":                   "SessionDependencyInput",
 	"ControllersAdmitSessionRequest":                      "AdmitSessionRequest",
 	"ControllersSpawnSessionResponse":                     "SpawnSessionResponse",
@@ -753,6 +768,7 @@ func operations() []operation {
 	ops = append(ops, agentOperations()...)
 	ops = append(ops, projectOperations()...)
 	ops = append(ops, sessionOperations()...)
+	ops = append(ops, dagRunOperations()...)
 	ops = append(ops, automationOperations()...)
 	ops = append(ops, prOperations()...)
 	ops = append(ops, reviewOperations()...)
@@ -2875,6 +2891,62 @@ func projectOperations() []operation {
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+	}
+}
+
+// dagRunOperations declares the atomic DAG run surface. Must stay 1:1 with the
+// routes DagRunsController.Register mounts (enforced by the parity test).
+func dagRunOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodPost, path: "/api/v1/projects/{projectId}/dag-runs", id: "createDagRun", tag: "sessions",
+			summary:    "Submit a DAG run atomically",
+			pathParams: []any{controllers.DagRunProjectIDParam{}},
+			reqBody:    controllers.CreateDagRunRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.DagRunEnvelope{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/projects/{projectId}/dag-runs", id: "listDagRuns", tag: "sessions",
+			summary:    "List a project's DAG runs",
+			pathParams: []any{controllers.DagRunProjectIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListDagRunsResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/dag-runs/{dagRunId}", id: "getDagRun", tag: "sessions",
+			summary:    "Get one DAG run's derived status and nodes",
+			pathParams: []any{controllers.DagRunIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.DagRunEnvelope{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/dag-runs/{dagRunId}/cancel", id: "cancelDagRun", tag: "sessions",
+			summary:         "Cancel a DAG run's queued and blocked nodes",
+			pathParams:      []any{controllers.DagRunIDParam{}},
+			reqBody:         controllers.CancelDagRunRequest{},
+			optionalReqBody: true,
+			resps: []respUnit{
+				{http.StatusOK, controllers.DagRunEnvelope{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 		},
 	}

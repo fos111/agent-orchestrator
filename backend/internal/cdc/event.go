@@ -30,6 +30,10 @@ const (
 	EventPRReviewThreadResolved EventType = "pr_review_thread_resolved"
 	EventReviewRunCreated       EventType = "review_run_created"
 	EventReviewRunUpdated       EventType = "review_run_updated"
+	// DAG run events are project-level: SessionID is empty and the payload
+	// carries the run id and status.
+	EventDagRunCreated EventType = "dag_run.created"
+	EventDagRunUpdated EventType = "dag_run.updated"
 )
 
 // Event is one CDC change read from change_log. Seq is the monotonic ordering +

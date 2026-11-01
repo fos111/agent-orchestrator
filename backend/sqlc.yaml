@@ -113,6 +113,35 @@ sql:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "SessionID"
               pointer: true
+          # Nullable: a session that is not a DAG node has no run.
+          - column: "sessions.dag_run_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DagRunID"
+              pointer: true
+          - column: "sessions.dag_node_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DagNodeID"
+              pointer: true
+          - column: "dag_runs.id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DagRunID"
+          - column: "dag_runs.project_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "ProjectID"
+          # Nullable: a run may be submitted without a coordinator session.
+          - column: "dag_runs.root_session_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionID"
+              pointer: true
+          - column: "dag_runs.status"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DagRunStatus"
           - column: "sessions.kind"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

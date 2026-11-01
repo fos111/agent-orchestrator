@@ -432,6 +432,17 @@ type Cue struct {
 	UpdatedAt time.Time
 }
 
+type DagRun struct {
+	ID                domain.DagRunID
+	ProjectID         domain.ProjectID
+	RootSessionID     *domain.SessionID
+	Name              string
+	Status            domain.DagRunStatus
+	CancelRequestedAt sql.NullTime
+	CreatedAt         time.Time
+	CompletedAt       sql.NullTime
+}
+
 type ManagedHarnessRelease struct {
 	Harness   string
 	Release   string
@@ -748,6 +759,8 @@ type Session struct {
 	AdmittedAt                       sql.NullTime
 	AdmissionOverride                bool
 	QueuedSpawnConfig                string
+	DagRunID                         *domain.DagRunID
+	DagNodeID                        *domain.DagNodeID
 }
 
 type SessionAgentAccount struct {
