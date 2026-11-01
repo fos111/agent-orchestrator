@@ -98,8 +98,9 @@ type ProjectConfig struct {
 type SchedulingConfig struct {
 	// MaxActiveSessions caps active sessions in the project. 0 is unlimited.
 	MaxActiveSessions int `json:"maxActiveSessions,omitempty"`
-	// MaxActivePerTeam caps active workers in one orchestrator subtree. 0 is
-	// unlimited; Phase 4 enforces it.
+	// MaxActivePerTeam caps active workers in one orchestrator subtree,
+	// excluding the lead. 0 uses DefaultMaxActivePerTeam, so every team has a
+	// bound unless the project sets a different one.
 	MaxActivePerTeam int `json:"maxActivePerTeam,omitempty"`
 	// MaxDependenciesPerSession caps incoming dependency edges. 0 uses
 	// DefaultMaxDependenciesPerSession.
@@ -118,6 +119,15 @@ func (c SchedulingConfig) DagNodeLimit() int {
 		return c.MaxDagNodesPerRun
 	}
 	return MaxDagNodesPerRun
+}
+
+// TeamLimit resolves the effective per-team active-worker cap. Zero (unset)
+// uses DefaultMaxActivePerTeam, so every team is bounded by default.
+func (c SchedulingConfig) TeamLimit() int {
+	if c.MaxActivePerTeam > 0 {
+		return c.MaxActivePerTeam
+	}
+	return DefaultMaxActivePerTeam
 }
 
 // DefaultMaxDependenciesPerSession is the built-in cap on incoming edges,

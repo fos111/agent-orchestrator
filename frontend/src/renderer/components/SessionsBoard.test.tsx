@@ -29,6 +29,8 @@ const {
 	boardActionsInPanelMock,
 	cloudProjectsMock,
 	spawnCloudOrchestratorMock,
+	useTeamQueryMock,
+	useSendTeamMessageMock,
 } = vi.hoisted(() => ({
 	appMemoryMock: vi.fn(),
 	sessionMemoryMock: vi.fn(),
@@ -40,6 +42,13 @@ const {
 	boardActionsInPanelMock: vi.fn(() => false),
 	cloudProjectsMock: vi.fn((): { id: string; config?: object }[] | undefined => undefined),
 	spawnCloudOrchestratorMock: vi.fn(),
+	useTeamQueryMock: vi.fn(),
+	useSendTeamMessageMock: vi.fn(),
+}));
+
+vi.mock("../hooks/useTeam", () => ({
+	useTeamQuery: useTeamQueryMock,
+	useSendTeamMessage: useSendTeamMessageMock,
 }));
 
 vi.mock("../lib/cloud-orchestrator", () => ({ spawnCloudOrchestrator: spawnCloudOrchestratorMock }));
@@ -176,6 +185,14 @@ beforeEach(() => {
 	workspaceQueryMock.mockReset().mockReturnValue({ data: [], isError: false });
 	appMemoryMock.mockReset().mockReturnValue({ data: undefined, isError: false });
 	sessionMemoryMock.mockReset().mockReturnValue({ data: undefined, isError: false });
+	useTeamQueryMock.mockReset().mockReturnValue({ data: undefined, isPending: true, isError: false });
+	useSendTeamMessageMock.mockReset().mockReturnValue({
+		mutate: vi.fn(),
+		reset: vi.fn(),
+		isPending: false,
+		data: undefined,
+		error: null,
+	});
 	window.localStorage.removeItem("ao.board.archive.layout");
 	boardActionsInPanelMock.mockReset().mockReturnValue(false);
 });
@@ -2127,6 +2144,101 @@ describe("SessionsBoard artifacts", () => {
 
 		expect(screen.queryByTestId("sessions-queue-strip")).not.toBeInTheDocument();
 	});
+
+	it("filters the board to one team subtree and shows its header", () => {
+		workspaceQueryMock.mockReturnValue({ data: [teamBoardWorkspace()], isSuccess: true, isError: false });
+		useTeamQueryMock.mockReturnValue({
+			data: {
+				rootSessionId: "orch-1",
+				projectId: "p1",
+				activeWorkers: 1,
+				maxActiveWorkers: 4,
+				orchestrator: {
+					sessionId: "orch-1",
+					displayName: "Orchestrator one",
+					kind: "orchestrator",
+					isTerminated: false,
+					createdAt: "2026-01-01T00:00:00Z",
+				},
+				members: [],
+			},
+			isPending: false,
+			isError: false,
+		});
+
+		renderBoardWithProps({
+			projectId: "p1",
+			onViewChange: vi.fn(),
+			team: "orch-1",
+			onTeamChange: vi.fn(),
+		});
+
+		expect(screen.getByTestId("team-header")).toBeInTheDocument();
+		expect(screen.getByText("Team one task")).toBeInTheDocument();
+		expect(screen.queryByText("Team two task")).not.toBeInTheDocument();
+	});
+
+	it("ignores a team root that is not an orchestrator instead of blanking the board", () => {
+		workspaceQueryMock.mockReturnValue({ data: [teamBoardWorkspace()], isSuccess: true, isError: false });
+
+		renderBoardWithProps({
+			projectId: "p1",
+			onViewChange: vi.fn(),
+			team: "w1",
+			onTeamChange: vi.fn(),
+		});
+
+		expect(screen.queryByTestId("team-header")).not.toBeInTheDocument();
+		expect(screen.getByText("Team one task")).toBeInTheDocument();
+		expect(screen.getByText("Team two task")).toBeInTheDocument();
+	});
+
+	it("offers a team entry for a local project with an orchestrator", () => {
+		workspaceQueryMock.mockReturnValue({ data: [teamBoardWorkspace()], isSuccess: true, isError: false });
+		const onTeamChange = vi.fn();
+
+		renderBoardWithProps({ projectId: "p1", onViewChange: vi.fn(), onTeamChange });
+
+		fireEvent.click(screen.getByTestId("team-entry"));
+		expect(onTeamChange).toHaveBeenCalledWith("orch-2");
+	});
+
+	it("hides the team surface on a cloud project", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [{ ...teamBoardWorkspace(), kind: "cloud" }],
+			isSuccess: true,
+			isError: false,
+		});
+
+		renderBoardWithProps({
+			projectId: "p1",
+			onViewChange: vi.fn(),
+			team: "orch-1",
+			onTeamChange: vi.fn(),
+		});
+
+		expect(screen.queryByTestId("team-entry")).not.toBeInTheDocument();
+		expect(screen.queryByTestId("team-header")).not.toBeInTheDocument();
+		expect(screen.getByText("Team two task")).toBeInTheDocument();
+	});
+
+	it("hides the team surface on a standalone/New Task board", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [{ ...teamBoardWorkspace(), kind: "standalone" }],
+			isSuccess: true,
+			isError: false,
+		});
+
+		renderBoardWithProps({
+			projectId: "p1",
+			onViewChange: vi.fn(),
+			team: "orch-1",
+			onTeamChange: vi.fn(),
+		});
+
+		expect(screen.queryByTestId("team-entry")).not.toBeInTheDocument();
+		expect(screen.queryByTestId("team-header")).not.toBeInTheDocument();
+	});
 });
 
 function workspaceWithSessions(sessions: WorkspaceSession[]): WorkspaceSummary {
@@ -2137,6 +2249,40 @@ function workspaceWithSessions(sessions: WorkspaceSession[]): WorkspaceSummary {
 		kind: "single_repo",
 		sessions,
 	};
+}
+
+/** Two orchestrator teams with one worker each, for the board team filter. */
+function teamBoardWorkspace(): WorkspaceSummary {
+	return workspaceWithSessions([
+		boardSession({
+			id: "orch-1",
+			title: "Orchestrator one",
+			status: "working",
+			kind: "orchestrator",
+			createdAt: "2026-01-01T00:00:00Z",
+		}),
+		boardSession({
+			id: "orch-2",
+			title: "Orchestrator two",
+			status: "working",
+			kind: "orchestrator",
+			createdAt: "2026-01-01T00:01:00Z",
+		}),
+		boardSession({
+			id: "w1",
+			title: "Team one task",
+			status: "working",
+			kind: "worker",
+			parentSessionId: "orch-1",
+		}),
+		boardSession({
+			id: "w2",
+			title: "Team two task",
+			status: "working",
+			kind: "worker",
+			parentSessionId: "orch-2",
+		}),
+	]);
 }
 
 function boardSession(

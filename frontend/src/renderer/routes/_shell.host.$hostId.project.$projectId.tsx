@@ -5,6 +5,7 @@ import {
 	boardSearchWithArchived,
 	boardSearchWithEdges,
 	boardSearchWithLayout,
+	boardSearchWithTeam,
 	boardSearchWithRun,
 	boardSearchWithView,
 	validateBoardSearch,
@@ -18,7 +19,7 @@ export const Route = createFileRoute("/_shell/host/$hostId/project/$projectId")(
 
 function HostProjectBoardRoute() {
 	const { hostId, projectId } = Route.useParams();
-	const { view, archived, layout, edges, run } = Route.useSearch();
+	const { view, archived, layout, edges, run, team } = Route.useSearch();
 	const navigate = Route.useNavigate();
 	// A run filter reads best as the layered DAG; the user can still switch.
 	const effectiveLayout = layout ?? (run ? "dependency" : "spawn");
@@ -46,6 +47,10 @@ function HostProjectBoardRoute() {
 			run={run}
 			onRunChange={(next) =>
 				navigate({ search: (prev) => boardSearchWithRun(prev, next), replace: true })
+			}
+			team={team}
+			onTeamChange={(next) =>
+				navigate({ search: (prev) => boardSearchWithTeam(prev, next), replace: true })
 			}
 		/>
 	);

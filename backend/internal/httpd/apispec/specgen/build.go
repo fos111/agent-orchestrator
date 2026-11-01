@@ -102,6 +102,8 @@ func Build() ([]byte, error) {
 			"Server-side unfurl of external links for the CSP-locked renderer"),
 		*(&openapi31.Tag{Name: "github"}).WithDescription(
 			"Local GitHub personal access token storage and repository listing"),
+		*(&openapi31.Tag{Name: "teams"}).WithDescription(
+			"Derived orchestrator teams and best-effort team broadcasts"),
 	}
 
 	for _, op := range operations() {
@@ -591,14 +593,24 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersOpenCodexAccountLoginTerminalResponse": "OpenCodexAccountLoginTerminalResponse",
 	"ControllersCodexAccountLoginTerminalResponse":     "CodexAccountLoginTerminalResponse",
 	// httpd/controllers — project cue wire envelopes
-	"ControllersCueIDParam":           "CueIDParam",
-	"ControllersCueProjectIDParam":    "CueProjectIDParam",
-	"ControllersCueDefinitionRequest": "CueDefinitionRequest",
-	"ControllersCueResponse":          "CueResponse",
-	"ControllersListCuesResponse":     "ListCuesResponse",
-	"ControllersInvokeCueRequest":     "InvokeCueRequest",
-	"ControllersInvokeCueResponse":    "InvokeCueResponse",
-	"ControllersCueEnvelope":          "CueEnvelope",
+	"ControllersCueIDParam":                   "CueIDParam",
+	"ControllersCueProjectIDParam":            "CueProjectIDParam",
+	"ControllersCueDefinitionRequest":         "CueDefinitionRequest",
+	"ControllersCueResponse":                  "CueResponse",
+	"ControllersListCuesResponse":             "ListCuesResponse",
+	"ControllersInvokeCueRequest":             "InvokeCueRequest",
+	"ControllersInvokeCueResponse":            "InvokeCueResponse",
+	"ControllersCueEnvelope":                  "CueEnvelope",
+	"ControllersTeamProjectIDParam":           "TeamProjectIDParam",
+	"ControllersTeamRootSessionIDParam":       "TeamRootSessionIDParam",
+	"ControllersTeamEnvelope":                 "TeamEnvelope",
+	"ControllersListTeamsResponse":            "ListTeamsResponse",
+	"ControllersBroadcastTeamMessageRequest":  "BroadcastTeamMessageRequest",
+	"ControllersBroadcastTeamMessageResponse": "BroadcastTeamMessageResponse",
+	"DomainTeam":                              "Team",
+	"DomainTeamMember":                        "TeamMember",
+	"DomainTeamMessage":                       "TeamMessage",
+	"DomainTeamMessageDelivery":               "TeamMessageDelivery",
 	// httpd/controllers — PR wire envelopes
 	"ControllersMergePRRequest":          "MergePRRequest",
 	"ControllersMergePRResponse":         "MergePRResponse",
@@ -763,6 +775,50 @@ type operation struct {
 	contentTypes    map[int]string // optional non-JSON response content types by status
 }
 
+// teamOperations declares the derived team surface. Membership is the
+// spawn-parent subtree below an orchestrator, so there is no create or delete
+// operation; a broadcast is the only team mutation.
+func teamOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/projects/{projectId}/teams", id: "listProjectTeams", tag: "teams",
+			summary:    "List a project's derived orchestrator teams",
+			pathParams: []any{controllers.TeamProjectIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListTeamsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/teams/{rootSessionId}", id: "getTeam", tag: "teams",
+			summary:    "Get one derived team by its orchestrator root",
+			pathParams: []any{controllers.TeamRootSessionIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.TeamEnvelope{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/teams/{rootSessionId}/messages", id: "broadcastTeamMessage", tag: "teams",
+			summary:    "Broadcast a best-effort message to every team member except the sender",
+			pathParams: []any{controllers.TeamRootSessionIDParam{}},
+			reqBody:    controllers.BroadcastTeamMessageRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.BroadcastTeamMessageResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
+}
+
 func operations() []operation {
 	ops := append([]operation{}, eventOperations()...)
 	ops = append(ops, agentOperations()...)
@@ -785,6 +841,7 @@ func operations() []operation {
 	ops = append(ops, browserOperations()...)
 	ops = append(ops, shellTerminalOperations()...)
 	ops = append(ops, cueOperations()...)
+	ops = append(ops, teamOperations()...)
 	ops = append(ops, systemOperations()...)
 	ops = append(ops, computerUseOperations()...)
 	ops = append(ops, identityOperations()...)

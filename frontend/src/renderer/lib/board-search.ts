@@ -9,6 +9,8 @@ export type BoardSearch = {
 	archived?: boolean;
 	/** A DAG run to filter the graph to. Absent when the whole project is shown. */
 	run?: string;
+	/** A team root to filter the board and graph to. Absent when the whole project is shown. */
+	team?: string;
 	/** Only `dependency` is carried; `spawn` is the default and stays absent. */
 	layout?: "dependency";
 	/** Only a narrowed set is carried; the full set is the default. */
@@ -68,6 +70,8 @@ export function validateBoardSearch(search: Record<string, unknown>): BoardSearc
 	if (archived === true || archived === 1 || archived === "1") result.archived = true;
 	const run = boardSearchRun(search.run);
 	if (run) result.run = run;
+	const team = boardSearchRun(search.team);
+	if (team) result.team = team;
 	if (search.layout === "dependency") result.layout = "dependency";
 	const edges = boardSearchEdges(search.edges);
 	if (edges) result.edges = edges;
@@ -81,6 +85,7 @@ function withBoardSearch(search: BoardSearch, patch: Partial<BoardSearch>): Boar
 		...(next.view === "graph" ? { view: "graph" as const } : {}),
 		...(next.archived ? { archived: true } : {}),
 		...(next.run ? { run: next.run } : {}),
+		...(next.team ? { team: next.team } : {}),
 		...(next.layout === "dependency" ? { layout: "dependency" as const } : {}),
 		...(next.edges ? { edges: next.edges } : {}),
 	};
@@ -90,8 +95,9 @@ export function boardSearchWithView(
 	search: BoardSearch,
 	view: "board" | "graph",
 ): BoardSearch {
-	// The board view has no graph layout or edge filters to keep.
-	if (view === "board") return {};
+	// The board view has no graph layout or edge filters to keep. A team filter
+	// applies to both views, so it survives the switch.
+	if (view === "board") return search.team ? { team: search.team } : {};
 	return withBoardSearch(search, { view: "graph" });
 }
 
@@ -112,6 +118,13 @@ export function boardSearchWithRun(
 		run: normalized,
 		...(normalized ? { view: "graph" as const } : {}),
 	});
+}
+
+export function boardSearchWithTeam(
+	search: BoardSearch,
+	team: string | undefined,
+): BoardSearch {
+	return withBoardSearch(search, { team: boardSearchRun(team) });
 }
 
 export function boardSearchWithLayout(

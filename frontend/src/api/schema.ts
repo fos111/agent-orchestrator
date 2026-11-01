@@ -1928,6 +1928,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{projectId}/teams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a project's derived orchestrator teams */
+        get: operations["listProjectTeams"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/clone": {
         parameters: {
             query?: never;
@@ -4432,6 +4449,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/teams/{rootSessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one derived team by its orchestrator root */
+        get: operations["getTeam"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/teams/{rootSessionId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Broadcast a best-effort message to every team member except the sender */
+        post: operations["broadcastTeamMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/telemetry/identity": {
         parameters: {
             query?: never;
@@ -5079,6 +5130,18 @@ export interface components {
             settings: components["schemas"]["AwakeSettings"];
             /** Format: date-time */
             startedAt?: null | string;
+        };
+        BroadcastTeamMessageRequest: {
+            /** @description Best-effort message delivered to every non-terminated team member except the sender. */
+            message: string;
+            senderSessionId?: string;
+        };
+        BroadcastTeamMessageResponse: {
+            delivered: number;
+            deliveries: components["schemas"]["TeamMessageDelivery"][];
+            failed: number;
+            message: components["schemas"]["TeamMessage"];
+            ok: boolean;
         };
         BrowserCommandRequest: {
             action: string;
@@ -6491,6 +6554,9 @@ export interface components {
         ListShellTerminalsResponse: {
             shellTerminals: components["schemas"]["ShellTerminalResponse"][];
         };
+        ListTeamsResponse: {
+            teams: components["schemas"]["Team"][];
+        };
         ListWorkspaceFilesResponse: {
             ahead?: null | number;
             behind?: null | number;
@@ -7898,6 +7964,41 @@ export interface components {
             ready: boolean;
             /** @description Individual checks in stable order for the selected probe. */
             requirements: components["schemas"]["SystemRequirement"][];
+        };
+        Team: {
+            activeWorkers: number;
+            maxActiveWorkers: number;
+            members: components["schemas"]["TeamMember"][];
+            orchestrator: components["schemas"]["TeamMember"];
+            projectId: string;
+            rootSessionId: string;
+        };
+        TeamEnvelope: {
+            team: components["schemas"]["Team"];
+        };
+        TeamMember: {
+            /** Format: date-time */
+            createdAt: string;
+            displayName?: string;
+            isTerminated: boolean;
+            kind: string;
+            parentSessionId?: string;
+            sessionId: string;
+        };
+        TeamMessage: {
+            body: string;
+            /** Format: date-time */
+            createdAt: string;
+            id: string;
+            projectId: string;
+            senderSessionId?: string;
+            teamRootSessionId: string;
+        };
+        TeamMessageDelivery: {
+            error?: string;
+            messageId: string;
+            sessionId: string;
+            status: string;
         };
         TelemetryIdentityResponse: {
             cloudUserId?: string;
@@ -14778,6 +14879,56 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listProjectTeams: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project whose orchestrator teams are listed. */
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListTeamsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -24564,6 +24715,128 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getTeam: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Orchestrator session at the root of the derived team. */
+                rootSessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    broadcastTeamMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Orchestrator session at the root of the derived team. */
+                rootSessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BroadcastTeamMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BroadcastTeamMessageResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
             };
             /** @description Internal Server Error */
             500: {

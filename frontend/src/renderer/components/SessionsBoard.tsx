@@ -11,9 +11,10 @@ import {
 	largestSession,
 	type ChipTone,
 } from "@aoagents/product-ui";
-import { AlertTriangle, LayoutDashboard, RotateCw } from "lucide-react";
+import { AlertTriangle, LayoutDashboard, RotateCw, Users } from "lucide-react";
 import {
 	CLOUD_PROJECT_KIND,
+	STANDALONE_PROJECT_KIND,
 	type WorkspaceSession,
 	isOrchestratorSession,
 	newestActiveOrchestrator,
@@ -57,6 +58,8 @@ import { sessionNavigateTarget } from "../lib/navigate-to-session";
 import { ProjectTerminationFeedback } from "./ShellTopbar";
 import { ProjectBoardActions } from "./ProjectBoardActions";
 import { SessionsGraphView } from "./SessionsGraphView";
+import { TeamHeader } from "./TeamHeader";
+import { sessionIdsInTeam } from "../lib/team-membership";
 import { SessionsQueueStrip } from "./SessionsQueueStrip";
 import { SessionDependenciesPanel } from "./SessionDependenciesPanel";
 import { SessionsViewToggle, shouldShowSessionsViewToggle } from "./SessionsViewToggle";
@@ -88,6 +91,9 @@ type SessionsBoardProps = {
 	/** A DAG run to filter the graph to. */
 	run?: string;
 	onRunChange?: (run: string | undefined) => void;
+	/** A team root to filter the board and graph to. */
+	team?: string;
+	onTeamChange?: (team: string | undefined) => void;
 };
 
 const isMac = isMacPlatform();
@@ -107,6 +113,8 @@ export function SessionsBoard({
 	onEdgesChange,
 	run,
 	onRunChange,
+	team,
+	onTeamChange,
 }: SessionsBoardProps) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
@@ -152,9 +160,29 @@ export function SessionsBoard({
 	const boardLabel = t("shell.board");
 	const liveSessions = workspaces.flatMap((workspace) => workerSessions(workspace.sessions));
 	const demoWorkspaceId = projectId ?? workspaces[0]?.id;
-	const sessions = !hostId && usesPreviewWorkspaceData && demoWorkspaceId && liveSessions.length === 0
+	const unfilteredSessions = !hostId && usesPreviewWorkspaceData && demoWorkspaceId && liveSessions.length === 0
 		? demoBoardSessions(demoWorkspaceId)
 		: liveSessions;
+	// A team filter narrows both views to one orchestrator subtree. Standalone
+	// projects, desktop New Task work, and cloud projects have no derived team,
+	// so the filter and its entry point only exist on a local/remote project
+	// board. The root must be a real orchestrator in the project: a stale or
+	// hand-edited `?team=` value is ignored rather than blanking the board.
+	const allProjectSessions = workspaces.flatMap((candidate) => candidate.sessions);
+	const teamSurfaceAllowed =
+		projectId !== undefined &&
+		workspace !== undefined &&
+		workspace.kind !== CLOUD_PROJECT_KIND &&
+		workspace.kind !== STANDALONE_PROJECT_KIND;
+	const teamRootIds = new Set(
+		allProjectSessions.filter((session) => session.kind === "orchestrator").map((session) => session.id),
+	);
+	const teamRoot = teamSurfaceAllowed && team && teamRootIds.has(team) ? team : undefined;
+	const teamSessionIds = teamRoot
+		? sessionIdsInTeam(allProjectSessions, allProjectSessions, teamRoot)
+		: undefined;
+	const inTeam = (session: WorkspaceSession) => !teamSessionIds || teamSessionIds.has(session.id);
+	const sessions = teamSessionIds ? unfilteredSessions.filter(inTeam) : unfilteredSessions;
 	const orchestrator = projectId ? newestActiveOrchestrator(workspaces[0]?.sessions ?? []) : undefined;
 	const projectActions = useProjectOrchestratorAction({
 		projectId,
@@ -418,8 +446,19 @@ export function SessionsBoard({
 				</div>
 			) : null}
 			{canShowGraph ? (
-				<div className="flex shrink-0 items-center px-3 py-2">
+				<div className="flex shrink-0 items-center gap-2 px-3 py-2">
 					<SessionsViewToggle view={activeView} onChange={(next) => onViewChange?.(next)} />
+					{teamSurfaceAllowed && orchestrator && onTeamChange && !teamRoot ? (
+						<button
+							type="button"
+							data-testid="team-entry"
+							className="inline-flex items-center gap-1.5 rounded-md border border-border px-1.5 py-0.5 text-xs font-medium text-foreground hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+							onClick={() => onTeamChange(orchestrator.id)}
+						>
+							<Users className="size-3.5 text-muted-foreground" aria-hidden="true" />
+							{t("shell.teamView")}
+						</button>
+					) : null}
 				</div>
 			) : null}
 			<SessionsQueueStrip
@@ -428,13 +467,24 @@ export function SessionsBoard({
 				onAdmitNow={(session) => openDependencies(session, true)}
 			/>
 			<div className="flex min-h-0 flex-1 flex-col">
+				{teamRoot ? (
+					<TeamHeader
+						rootSessionId={teamRoot}
+						hostId={hostId}
+						onClear={onTeamChange ? () => onTeamChange(undefined) : undefined}
+						onOpenSession={(sessionId) => {
+							const target = allProjectSessions.find((candidate) => candidate.id === sessionId);
+							if (target) openSession(target);
+						}}
+					/>
+				) : null}
 				{!hostId && (presentation.workspaceStartupState === "error" || localWorkspaceQuery.isError) ? (
 					<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
 				) : hostId && !workspace ? null : showWelcome ? (
 				<BoardWelcome />
 				) : activeView === "graph" ? (
 					<SessionsGraphView
-						sessions={workspace?.sessions ?? []}
+						sessions={teamSessionIds ? allProjectSessions.filter(inTeam) : (workspace?.sessions ?? [])}
 						showArchived={showArchived ?? false}
 						onShowArchivedChange={onShowArchivedChange ?? (() => undefined)}
 						onOpenSession={openSession}

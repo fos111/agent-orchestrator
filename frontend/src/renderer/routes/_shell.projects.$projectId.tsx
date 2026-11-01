@@ -5,6 +5,7 @@ import {
 	boardSearchWithArchived,
 	boardSearchWithEdges,
 	boardSearchWithLayout,
+	boardSearchWithTeam,
 	boardSearchWithView,
 	validateBoardSearch,
 } from "../lib/board-search";
@@ -16,7 +17,7 @@ export const Route = createFileRoute("/_shell/projects/$projectId")({
 
 function ProjectBoardRoute() {
 	const { projectId } = Route.useParams();
-	const { view, archived, layout, edges } = Route.useSearch();
+	const { view, archived, layout, edges, team } = Route.useSearch();
 	const navigate = Route.useNavigate();
 	return (
 		<SessionsBoard
@@ -36,6 +37,10 @@ function ProjectBoardRoute() {
 			edges={boardSearchEdges(edges)}
 			onEdgesChange={(next) =>
 				navigate({ search: (prev) => boardSearchWithEdges(prev, next), replace: true })
+			}
+			team={team}
+			onTeamChange={(next) =>
+				navigate({ search: (prev) => boardSearchWithTeam(prev, next), replace: true })
 			}
 		/>
 	);
