@@ -18,6 +18,7 @@ import {
 	isOrchestratorSession,
 	newestActiveOrchestrator,
 	orchestratorHealth,
+	sessionIsPreAdmission,
 	workerSessions,
 	hasConfiguredOrchestratorAgent,
 } from "../types/workspace";
@@ -56,7 +57,11 @@ import { sessionNavigateTarget } from "../lib/navigate-to-session";
 import { ProjectTerminationFeedback } from "./ShellTopbar";
 import { ProjectBoardActions } from "./ProjectBoardActions";
 import { SessionsGraphView } from "./SessionsGraphView";
+import { SessionsQueueStrip } from "./SessionsQueueStrip";
+import { SessionDependenciesPanel } from "./SessionDependenciesPanel";
 import { SessionsViewToggle, shouldShowSessionsViewToggle } from "./SessionsViewToggle";
+import { useSessionScheduling } from "../hooks/useSessionScheduling";
+import type { BoardSearchEdge } from "../lib/board-search";
 import { useDiagnosticsEnabled, usePressureState, useSessionMemory } from "../hooks/useSessionMemory";
 import { AppMemoryIndicator, toSessionFacts, useHasAppMemory } from "./SessionMemoryPanel";
 import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
@@ -74,13 +79,30 @@ type SessionsBoardProps = {
 	onViewChange?: (view: "board" | "graph") => void;
 	showArchived?: boolean;
 	onShowArchivedChange?: (show: boolean) => void;
+	/** Graph layout from the URL; `spawn` is the default tree. */
+	layout?: "spawn" | "dependency";
+	onLayoutChange?: (layout: "spawn" | "dependency") => void;
+	/** Which graph edges the URL asks for. */
+	edges?: readonly BoardSearchEdge[];
+	onEdgesChange?: (edges: readonly BoardSearchEdge[]) => void;
 };
 
 const isMac = isMacPlatform();
 const dragStyle = isMac ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
 const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
 
-export function SessionsBoard({ projectId, hostId, view, onViewChange, showArchived, onShowArchivedChange }: SessionsBoardProps) {
+export function SessionsBoard({
+	projectId,
+	hostId,
+	view,
+	onViewChange,
+	showArchived,
+	onShowArchivedChange,
+	layout = "spawn",
+	onLayoutChange,
+	edges,
+	onEdgesChange,
+}: SessionsBoardProps) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
@@ -166,11 +188,16 @@ export function SessionsBoard({ projectId, hostId, view, onViewChange, showArchi
 	// Who is in each shared cloud session, read without joining any of them.
 	const participantsBySession = useSessionParticipants(activeSessions, !hostId);
 	const { userId: cloudUserId } = useCloudCp(!hostId && activeSessions.some((session) => Boolean(session.cloud)));
-	const boardSessions = activeSessions.map((session) =>
-		session.status === "no_signal" || session.displayStatus === "No signal"
-			? { ...session, kanbanColumn: "building" as const }
-			: session,
-	);
+	// Pre-delivery work belongs to the queue strip, not a lane: a queued or
+	// blocked session has no workspace, terminal, or agent process yet, so a
+	// kanban column would misreport it as work in progress.
+	const boardSessions = activeSessions
+		.filter((session) => !sessionIsPreAdmission(session))
+		.map((session) =>
+			session.status === "no_signal" || session.displayStatus === "No signal"
+				? { ...session, kanbanColumn: "building" as const }
+				: session,
+		);
 	const boardLabels = sessionsBoardLabels(t);
 	const presentation = useBoardPresentation({
 		projectId,
@@ -208,6 +235,37 @@ export function SessionsBoard({ projectId, hostId, view, onViewChange, showArchi
 	const hasArchive = archived.length > 0 || hasMemory;
 	const boardHasArchive = hasArchive && activeView === "board";
 	const terminateSession = useTerminateSession();
+	const scheduling = useSessionScheduling();
+	// Pre-delivery work: queued and blocked sessions live in the queue strip
+	// above the lanes, not in a kanban column of their own.
+	const queueSessions = activeSessions.filter(sessionIsPreAdmission);
+	// Dependency ids resolve against every session in scope, orchestrators and
+	// archived ones included, so a panel row can still name what it waits on.
+	const dependencyLookup = new Map<string, WorkspaceSession>();
+	for (const candidate of workspaces) {
+		for (const item of candidate.sessions) dependencyLookup.set(item.id, item);
+	}
+	const [dependenciesSessionId, setDependenciesSessionId] = useState<string | undefined>();
+	const [dependenciesConfirm, setDependenciesConfirm] = useState(false);
+	const dependenciesSession = dependenciesSessionId ? dependencyLookup.get(dependenciesSessionId) : undefined;
+	const openDependencies = useCallback((session: WorkspaceSession, confirmAdmit = false) => {
+		setDependenciesSessionId(session.id);
+		setDependenciesConfirm(confirmAdmit);
+	}, []);
+	const closeDependencies = useCallback(() => {
+		setDependenciesSessionId(undefined);
+		setDependenciesConfirm(false);
+	}, []);
+	const dependencyEdgeShown = edges === undefined || edges.includes("depends");
+	const onShowDependenciesChange = onEdgesChange
+		? (show: boolean) => {
+				const current = edges ?? (["spawn", "depends", "delivers"] as const);
+				const next = show
+					? [...new Set([...current, "depends" as const])]
+					: current.filter((edge) => edge !== "depends");
+				onEdgesChange(next);
+			}
+		: undefined;
 	const activeScopeRef = useRef(scopeKey);
 	activeScopeRef.current = scopeKey;
 
@@ -358,6 +416,11 @@ export function SessionsBoard({ projectId, hostId, view, onViewChange, showArchi
 					<SessionsViewToggle view={activeView} onChange={(next) => onViewChange?.(next)} />
 				</div>
 			) : null}
+			<SessionsQueueStrip
+				sessions={queueSessions}
+				onOpenDependencies={(session) => openDependencies(session)}
+				onAdmitNow={(session) => openDependencies(session, true)}
+			/>
 			<div className="flex min-h-0 flex-1 flex-col">
 				{!hostId && (presentation.workspaceStartupState === "error" || localWorkspaceQuery.isError) ? (
 					<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
@@ -369,6 +432,10 @@ export function SessionsBoard({ projectId, hostId, view, onViewChange, showArchi
 						showArchived={showArchived ?? false}
 						onShowArchivedChange={onShowArchivedChange ?? (() => undefined)}
 						onOpenSession={openSession}
+						layout={layout}
+						onLayoutChange={onLayoutChange}
+						showDependencies={dependencyEdgeShown}
+						onShowDependenciesChange={onShowDependenciesChange}
 					/>
 				) : showProjectEmpty ? (
 					<ProjectBoardEmpty actions={<ProjectBoardActions actions={projectActions} placement="empty" />} />
@@ -395,6 +462,28 @@ export function SessionsBoard({ projectId, hostId, view, onViewChange, showArchi
 				)}
 			</div>
 			</div>
+
+			<SessionDependenciesPanel
+				session={dependenciesSession}
+				open={dependenciesSession !== undefined}
+				onOpenChange={(next) => {
+					if (!next) closeDependencies();
+				}}
+				resolveSession={(id) => dependencyLookup.get(id)}
+				onOpenSession={openSession}
+				onAdmit={(session, force) => {
+					void scheduling.admit(session, force);
+				}}
+				onComplete={(session) => {
+					void scheduling.complete(session);
+				}}
+				onCancel={(session) => {
+					void scheduling.cancel(session);
+				}}
+				busy={scheduling.isPending && scheduling.pendingSessionId === dependenciesSession?.id}
+				error={scheduling.error}
+				startWithAdmitConfirm={dependenciesConfirm}
+			/>
 
 			{boardHasArchive ? (
 				<BoardArchivePanel

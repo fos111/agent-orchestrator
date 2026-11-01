@@ -148,3 +148,85 @@ describe("SessionsGraphView", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+describe("SessionsGraphView graph filters", () => {
+	it("hides the layout and dependency controls on surfaces without callbacks", () => {
+		renderGraph(sessions());
+
+		expect(screen.queryByRole("group", { name: "Layout" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Dependencies" })).not.toBeInTheDocument();
+	});
+
+	it("switches the layout through the callback", () => {
+		const onLayoutChange = vi.fn();
+		render(
+			<SessionsGraphView
+				sessions={sessions()}
+				showArchived={false}
+				onShowArchivedChange={vi.fn()}
+				onOpenSession={vi.fn()}
+				layout="spawn"
+				onLayoutChange={onLayoutChange}
+			/>,
+		);
+
+		const spawn = screen.getByRole("button", { name: "Spawn" });
+		const dependency = screen.getByRole("button", { name: "Dependency" });
+		expect(spawn).toHaveAttribute("aria-pressed", "true");
+		expect(dependency).toHaveAttribute("aria-pressed", "false");
+
+		fireEvent.click(dependency);
+		expect(onLayoutChange).toHaveBeenCalledWith("dependency");
+	});
+
+	it("toggles dependency edges through the callback", () => {
+		const onShowDependenciesChange = vi.fn();
+		render(
+			<SessionsGraphView
+				sessions={sessions()}
+				showArchived={false}
+				onShowArchivedChange={vi.fn()}
+				onOpenSession={vi.fn()}
+				showDependencies
+				onShowDependenciesChange={onShowDependenciesChange}
+			/>,
+		);
+
+		const toggle = screen.getByRole("button", { name: "Dependencies" });
+		expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+		fireEvent.click(toggle);
+		expect(onShowDependenciesChange).toHaveBeenCalledWith(false);
+	});
+
+	it("lays out a multi-parent DAG by dependency depth", () => {
+		const items = [
+			makeSession({ id: "a", title: "Foundation", createdAt: "2026-01-01T00:00:00Z" }),
+			makeSession({ id: "b", title: "Second root", createdAt: "2026-01-01T00:01:00Z" }),
+			makeSession({
+				id: "c",
+				title: "Join",
+				createdAt: "2026-01-01T00:02:00Z",
+				dependsOn: [
+					{ sessionId: "a", requiredState: "merged", satisfied: false },
+					{ sessionId: "b", requiredState: "merged", satisfied: false },
+				],
+			}),
+		];
+		const { container } = render(
+			<SessionsGraphView
+				sessions={items}
+				showArchived={false}
+				onShowArchivedChange={vi.fn()}
+				onOpenSession={vi.fn()}
+				layout="dependency"
+				onLayoutChange={vi.fn()}
+			/>,
+		);
+
+		const join = container.querySelector('[data-node-key="session:c"]') as HTMLElement;
+		const foundation = container.querySelector('[data-node-key="session:a"]') as HTMLElement;
+		expect(parseInt(join.style.top, 10)).toBeGreaterThan(parseInt(foundation.style.top, 10));
+		expect(container.querySelectorAll('[data-edge-kind="depends"]')).toHaveLength(2);
+	});
+});

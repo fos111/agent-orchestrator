@@ -23,7 +23,14 @@ import {
 } from "@aoagents/product-ui";
 import type { TFunction } from "i18next";
 import { appI18n, type MessageKey } from "../i18n";
-import type { SessionActivity, SessionStatus } from "../types/workspace";
+import {
+	sessionSchedulingState,
+	type SessionActivity,
+	type SessionBlockedReason,
+	type SessionSchedulingState,
+	type SessionStatus,
+	type WorkspaceSession,
+} from "../types/workspace";
 
 function translator(t: TFunction): ProductUITranslator {
 	return (key, values) => t(key as MessageKey, values);
@@ -41,6 +48,60 @@ export function getSessionStatusView(
 	t: TFunction = appI18n.t,
 ): SessionStatusView {
 	return getPortableSessionStatusView(status, translator(t));
+}
+
+const BLOCKED_REASON_KEYS: Record<SessionBlockedReason, MessageKey> = {
+	dependency_pending: "shell.blockedReason.dependencyPending",
+	dependency_failed: "shell.blockedReason.dependencyFailed",
+	dependency_cancelled: "shell.blockedReason.dependencyCancelled",
+	dependency_missing: "shell.blockedReason.dependencyMissing",
+	dependency_cycle: "shell.blockedReason.dependencyCycle",
+	dependency_unsatisfiable: "shell.blockedReason.dependencyUnsatisfiable",
+	project_limit: "shell.blockedReason.projectLimit",
+	team_limit: "shell.blockedReason.teamLimit",
+	launch_failed: "shell.blockedReason.launchFailed",
+	invalid: "shell.blockedReason.invalid",
+};
+
+export type SessionSchedulingView = {
+	state: SessionSchedulingState;
+	/** Short state label. Empty for a session that starts immediately. */
+	label: string;
+	/** Why it is blocked, when the daemon named a reason. */
+	reason?: string;
+	/** Which visual treatment the board and graph use. */
+	tone: "none" | "queued" | "blocked";
+};
+
+/**
+ * How the scheduler's verdict on a session reads on the board and graph. A
+ * session without scheduling state is `immediate` and gets no label at all, so
+ * dependency-free surfaces render exactly as they did before.
+ */
+export function getSessionSchedulingView(
+	session: Pick<WorkspaceSession, "schedulingState" | "blockedReason">,
+	t: TFunction = appI18n.t,
+): SessionSchedulingView {
+	const state = sessionSchedulingState(session);
+	switch (state) {
+		case "queued":
+			return { state, label: t("shell.schedulingQueued"), tone: "queued" };
+		case "blocked":
+			return {
+				state,
+				label: t("shell.schedulingBlocked"),
+				reason: session.blockedReason
+					? t(BLOCKED_REASON_KEYS[session.blockedReason])
+					: t("shell.blockedReasonUnknown"),
+				tone: "blocked",
+			};
+		case "cancelled":
+			return { state, label: t("shell.schedulingCancelled"), tone: "none" };
+		case "admitted":
+			return { state, label: t("shell.schedulingAdmitted"), tone: "none" };
+		default:
+			return { state, label: "", tone: "none" };
+	}
 }
 
 export function getAttentionZoneView(

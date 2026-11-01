@@ -101,6 +101,123 @@ export type SessionBranchState = { commits: number; remoteBranch?: string; unpus
 /** The session's current launch still runs a harness release an update has replaced. */
 export type SessionStaleBinary = { version: string; since: string; switchFailedAt?: string };
 
+/**
+ * Where the dependency scheduler put a session, mirroring the daemon's
+ * `schedulingState`. `immediate` is every session created without dependency
+ * scheduling — including everything a daemon too old to send this field
+ * reports — so nothing downstream has to treat the field as missing.
+ */
+export type SessionSchedulingState = "immediate" | "queued" | "blocked" | "admitted" | "cancelled";
+
+/** Why a `blocked` session cannot be admitted yet, mirroring the daemon's `blockedReason`. */
+export type SessionBlockedReason =
+	| "dependency_pending"
+	| "dependency_failed"
+	| "dependency_cancelled"
+	| "dependency_missing"
+	| "dependency_cycle"
+	| "dependency_unsatisfiable"
+	| "project_limit"
+	| "team_limit"
+	| "launch_failed"
+	| "invalid";
+
+const SESSION_SCHEDULING_STATES: readonly SessionSchedulingState[] = [
+	"immediate",
+	"queued",
+	"blocked",
+	"admitted",
+	"cancelled",
+];
+
+const SESSION_BLOCKED_REASONS: readonly SessionBlockedReason[] = [
+	"dependency_pending",
+	"dependency_failed",
+	"dependency_cancelled",
+	"dependency_missing",
+	"dependency_cycle",
+	"dependency_unsatisfiable",
+	"project_limit",
+	"team_limit",
+	"launch_failed",
+	"invalid",
+];
+
+/** The state a dependency must reach before its dependents may be admitted. */
+export type SessionDependencyRequiredState = "ready" | "merged" | "completed";
+
+/**
+ * One dependency edge the daemon derived for this session: the session waits
+ * for {@link sessionId} to reach {@link requiredState}. `dependencyState` is the
+ * dependency's scheduling state while it is queued or blocked, otherwise its
+ * kanban column, so the detail panel can say what it is waiting on without
+ * holding the whole graph in the renderer.
+ */
+export type SessionDependency = {
+	sessionId: string;
+	requiredState: SessionDependencyRequiredState;
+	satisfied: boolean;
+	dependencyState?: string;
+};
+
+/** Normalized scheduling fields, the shape both session mappers produce. */
+export type SessionScheduling = {
+	schedulingState: SessionSchedulingState;
+	blockedReason?: SessionBlockedReason;
+	dependsOn: SessionDependency[];
+	dependents: string[];
+	completedAt?: string;
+	admittedAt?: string;
+	admissionOverride: boolean;
+};
+
+function toSchedulingState(value?: string): SessionSchedulingState {
+	return SESSION_SCHEDULING_STATES.includes(value as SessionSchedulingState)
+		? (value as SessionSchedulingState)
+		: "immediate";
+}
+
+function toBlockedReason(value?: string): SessionBlockedReason | undefined {
+	return SESSION_BLOCKED_REASONS.includes(value as SessionBlockedReason)
+		? (value as SessionBlockedReason)
+		: undefined;
+}
+
+/**
+ * Normalize a daemon `SessionView`'s scheduling fields. A daemon that predates
+ * dependency scheduling sends none of them, which reads as an ordinary
+ * immediately-started session with no dependencies.
+ */
+export function toSessionScheduling(session: {
+	schedulingState?: string;
+	blockedReason?: string;
+	dependsOn?: ReadonlyArray<{
+		sessionId: string;
+		requiredState: SessionDependencyRequiredState;
+		satisfied: boolean;
+		dependencyState?: string;
+	}>;
+	dependents?: readonly string[];
+	completedAt?: string | null;
+	admittedAt?: string | null;
+	admissionOverride?: boolean;
+}): SessionScheduling {
+	return {
+		schedulingState: toSchedulingState(session.schedulingState),
+		blockedReason: toBlockedReason(session.blockedReason),
+		dependsOn: (session.dependsOn ?? []).map((dependency) => ({
+			sessionId: dependency.sessionId,
+			requiredState: dependency.requiredState,
+			satisfied: dependency.satisfied,
+			dependencyState: dependency.dependencyState || undefined,
+		})),
+		dependents: [...(session.dependents ?? [])],
+		completedAt: session.completedAt ?? undefined,
+		admittedAt: session.admittedAt ?? undefined,
+		admissionOverride: session.admissionOverride === true,
+	};
+}
+
 export type WorkspaceSession = {
 	workspaceCleanup?: "pending" | "removed" | "preserved_dirty" | "failed" | "not_applicable";
 	id: string;
@@ -128,6 +245,23 @@ export type WorkspaceSession = {
 	kind?: SessionKind;
 	/** The same-project AO session that requested this spawn through `ao spawn`. */
 	parentSessionId?: string;
+	/**
+	 * Where the dependency scheduler put this session. Absent means `immediate`,
+	 * the behavior of every session created without dependency scheduling.
+	 */
+	schedulingState?: SessionSchedulingState;
+	/** Why a `blocked` session cannot be admitted yet. */
+	blockedReason?: SessionBlockedReason;
+	/** The dependencies this session waits on, derived by the daemon. */
+	dependsOn?: SessionDependency[];
+	/** Sessions that wait on this one; a reverse lookup for the detail panel. */
+	dependents?: string[];
+	/** ISO timestamp the session was recorded complete, for artifact and no-PR tasks. */
+	completedAt?: string;
+	/** ISO timestamp the scheduler authorized this session's launch. */
+	admittedAt?: string;
+	/** The session was force-admitted, bypassing its dependencies or a limit. */
+	admissionOverride?: boolean;
 	/**
 	 * Which controller is currently committed for this session. The session
 	 * surface renders from THIS value, never from the current creation default.
@@ -408,6 +542,50 @@ export function sortedWorkerSessions(sessions: WorkspaceSession[]): WorkspaceSes
 
 export function sessionIsActive(session: WorkspaceSession): boolean {
 	return session.isTerminated !== true && session.status !== "terminated";
+}
+
+/** The scheduler state of a session; `immediate` when the daemon did not send one. */
+export function sessionSchedulingState(
+	session: Pick<WorkspaceSession, "schedulingState">,
+): SessionSchedulingState {
+	return session.schedulingState ?? "immediate";
+}
+
+/** Waiting for a scheduler slot, with its dependencies already satisfied. */
+export function sessionIsQueued(session: Pick<WorkspaceSession, "schedulingState">): boolean {
+	return sessionSchedulingState(session) === "queued";
+}
+
+/**
+ * Not admitted yet: waiting on dependencies, a limit, or a failed launch. A
+ * blocked session is not dead — it keeps its row and is re-evaluated whenever a
+ * dependency or slot changes, so it must never read as archived or terminated.
+ */
+export function sessionIsBlocked(session: Pick<WorkspaceSession, "schedulingState">): boolean {
+	return sessionSchedulingState(session) === "blocked";
+}
+
+/** Pre-delivery work: queued or blocked. The sessions the queue strip lists. */
+export function sessionIsPreAdmission(session: Pick<WorkspaceSession, "schedulingState">): boolean {
+	const state = sessionSchedulingState(session);
+	return state === "queued" || state === "blocked";
+}
+
+/** The dependencies this session waits on. */
+export function sessionDependencies(session: Pick<WorkspaceSession, "dependsOn">): SessionDependency[] {
+	return session.dependsOn ?? [];
+}
+
+/** The sessions waiting on this one. */
+export function sessionDependents(session: Pick<WorkspaceSession, "dependents">): string[] {
+	return session.dependents ?? [];
+}
+
+/** A session that participates in the dependency graph at all. */
+export function sessionHasDependencies(
+	session: Pick<WorkspaceSession, "dependsOn" | "dependents">,
+): boolean {
+	return sessionDependencies(session).length > 0 || sessionDependents(session).length > 0;
 }
 
 /**

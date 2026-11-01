@@ -213,6 +213,71 @@ describe("app i18next instance", () => {
 		}
 	});
 
+	it("resolves every scheduling and dependency label in every locale", () => {
+		const schedulingKeys = [
+			"shell.schedulingQueued",
+			"shell.schedulingBlocked",
+			"shell.schedulingAdmitted",
+			"shell.schedulingCancelled",
+			"shell.schedulingImmediate",
+			"shell.blockedReasonUnknown",
+			"shell.blockedReason.dependencyPending",
+			"shell.blockedReason.dependencyFailed",
+			"shell.blockedReason.dependencyCancelled",
+			"shell.blockedReason.dependencyMissing",
+			"shell.blockedReason.dependencyCycle",
+			"shell.blockedReason.dependencyUnsatisfiable",
+			"shell.blockedReason.projectLimit",
+			"shell.blockedReason.teamLimit",
+			"shell.blockedReason.launchFailed",
+			"shell.blockedReason.invalid",
+			"shell.graphDependencies",
+			"shell.graphLayout",
+			"shell.graphLayoutSpawn",
+			"shell.graphLayoutDependency",
+			"shell.graphDependencyEdge",
+			"shell.graphDependenciesCount_other",
+			"shell.graphDependentsCount_other",
+			"shell.queue",
+			"shell.queueAria",
+			"shell.queueWaiting",
+			"shell.dependenciesOpen",
+			"shell.dependenciesPanel",
+			"shell.dependenciesPanelAria",
+			"shell.dependenciesClose",
+			"shell.dependenciesTitle",
+			"shell.dependentsTitle",
+			"shell.dependenciesEmpty",
+			"shell.dependentsEmpty",
+			"shell.dependencyRequired",
+			"shell.dependencyCurrent",
+			"shell.dependencySatisfied",
+			"shell.dependencyUnsatisfied",
+			"shell.dependencyRequiredReady",
+			"shell.dependencyRequiredMerged",
+			"shell.dependencyRequiredCompleted",
+			"shell.blockedBecause",
+			"shell.admitNow",
+			"shell.admitNowTitle",
+			"shell.admitNowBody",
+			"shell.markComplete",
+			"shell.cancelSession",
+			"shell.cancelSessionTitle",
+			"shell.cancelSessionBody",
+			"shell.admissionOverride",
+			"shell.schedulingLabel",
+			"shell.schedulingActionFailed",
+		] as const;
+		for (const locale of APP_LOCALES) {
+			const i18n = createAppI18n(locale);
+			for (const key of schedulingKeys) {
+				const value = i18n.t(key);
+				expect(value, `${locale}.${key}`).toBeTruthy();
+				expect(value, `${locale}.${key}`).not.toBe(key);
+			}
+		}
+	});
+
 	it("keeps interpolation variables aligned between locales", () => {
 		const variables = (message: string | string[]) => {
 			const msgs = Array.isArray(message) ? message : [message];

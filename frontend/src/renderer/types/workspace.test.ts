@@ -18,6 +18,13 @@ import {
 	primaryPR,
 	sessionArtifacts,
 	sortedPRs,
+	toSessionScheduling,
+	sessionDependencies,
+	sessionDependents,
+	sessionHasDependencies,
+	sessionIsBlocked,
+	sessionIsPreAdmission,
+	sessionIsQueued,
 	type AttentionZone,
 	type PRState,
 	type PullRequestFacts,
@@ -49,6 +56,84 @@ function sessionWith(overrides: Partial<WorkspaceSession>): WorkspaceSession {
 		...overrides,
 	};
 }
+
+describe("session scheduling", () => {
+	it("reads a session from a daemon without scheduling fields as immediate and undependent", () => {
+		const scheduling = toSessionScheduling({
+			schedulingState: undefined,
+			dependsOn: undefined,
+		});
+		expect(scheduling).toEqual({
+			schedulingState: "immediate",
+			blockedReason: undefined,
+			dependsOn: [],
+			dependents: [],
+			completedAt: undefined,
+			admittedAt: undefined,
+			admissionOverride: false,
+		});
+	});
+
+	it("keeps the scheduler state, blocked reason, and override the daemon reported", () => {
+		const scheduling = toSessionScheduling({
+			schedulingState: "blocked",
+			blockedReason: "dependency_pending",
+			admissionOverride: true,
+			admittedAt: "2026-01-01T00:05:00Z",
+		});
+		expect(scheduling.schedulingState).toBe("blocked");
+		expect(scheduling.blockedReason).toBe("dependency_pending");
+		expect(scheduling.admissionOverride).toBe(true);
+		expect(scheduling.admittedAt).toBe("2026-01-01T00:05:00Z");
+	});
+
+	it("drops a state or reason the renderer does not know instead of inventing one", () => {
+		const scheduling = toSessionScheduling({
+			schedulingState: "hibernating",
+			blockedReason: "quota_exhausted",
+		});
+		expect(scheduling.schedulingState).toBe("immediate");
+		expect(scheduling.blockedReason).toBeUndefined();
+	});
+
+	it("carries the dependency edges and the reverse dependents lookup", () => {
+		const scheduling = toSessionScheduling({
+			schedulingState: "blocked",
+			blockedReason: "dependency_pending",
+			dependsOn: [
+				{ sessionId: "sess-2", requiredState: "merged", satisfied: false, dependencyState: "building" },
+				{ sessionId: "sess-3", requiredState: "completed", satisfied: true },
+			],
+			dependents: ["sess-4"],
+		});
+		expect(scheduling.dependsOn).toEqual([
+			{ sessionId: "sess-2", requiredState: "merged", satisfied: false, dependencyState: "building" },
+			{ sessionId: "sess-3", requiredState: "completed", satisfied: true, dependencyState: undefined },
+		]);
+		expect(scheduling.dependents).toEqual(["sess-4"]);
+	});
+
+	it("treats queued and blocked as pre-admission work that is not dead", () => {
+		const queued = sessionWith({ schedulingState: "queued" });
+		const blocked = sessionWith({ schedulingState: "blocked", blockedReason: "dependency_pending" });
+		const running = sessionWith({ schedulingState: "admitted" });
+		expect(sessionIsQueued(queued)).toBe(true);
+		expect(sessionIsBlocked(queued)).toBe(false);
+		expect(sessionIsBlocked(blocked)).toBe(true);
+		expect(sessionIsPreAdmission(queued)).toBe(true);
+		expect(sessionIsPreAdmission(blocked)).toBe(true);
+		expect(sessionIsPreAdmission(running)).toBe(false);
+		// A blocked session keeps its row: it is not archived or terminated.
+		expect(sessionIsActive(blocked)).toBe(true);
+	});
+
+	it("reports no dependencies for a session the daemon sent without any", () => {
+		const session = sessionWith({});
+		expect(sessionDependencies(session)).toEqual([]);
+		expect(sessionDependents(session)).toEqual([]);
+		expect(sessionHasDependencies(session)).toBe(false);
+	});
+});
 
 const pr = (overrides: Partial<PullRequestFacts> & { number: number; state: PRState }): PullRequestFacts => ({
 	url: `https://example.com/pr/${overrides.number}`,

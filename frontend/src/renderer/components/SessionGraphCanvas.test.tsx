@@ -213,3 +213,101 @@ describe("SessionGraphCanvas", () => {
 		expect(archivedNode).toHaveTextContent("Archived");
 	});
 });
+
+describe("SessionGraphCanvas dependency and queue visuals", () => {
+	beforeEach(() => {
+		vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	function dependency(id: string) {
+		return { sessionId: id, requiredState: "merged" as const, satisfied: false };
+	}
+
+	it("draws a dashed dependency edge with an arrowhead toward the dependent", () => {
+		const sessions = [
+			makeSession({ id: "a", title: "Foundation", createdAt: "2026-01-01T00:00:00Z" }),
+			makeSession({
+				id: "b",
+				title: "Follow-up",
+				createdAt: "2026-01-01T00:01:00Z",
+				dependsOn: [dependency("a")],
+			}),
+		];
+		const { container, graph } = renderCanvas(sessions);
+		const dependencyEdge = container.querySelector('[data-edge-kind="depends"]');
+
+		expect(dependencyEdge).not.toBeNull();
+		expect(dependencyEdge).toHaveAttribute("stroke-dasharray", "6 4");
+		expect(dependencyEdge).toHaveAttribute("marker-end", "url(#session-graph-dependency-arrow)");
+		expect(dependencyEdge?.querySelector("title")).toHaveTextContent(
+			"Dependency: Foundation → Follow-up",
+		);
+		expect(graph.edges.filter((edge) => edge.kind === "depends")).toHaveLength(1);
+	});
+
+	it("labels a queued node in its accessible name and badge", () => {
+		const sessions = [
+			makeSession({
+				id: "queued",
+				title: "Waiting worker",
+				createdAt: "2026-01-01T00:00:00Z",
+				schedulingState: "queued",
+			}),
+		];
+		renderCanvas(sessions);
+
+		const node = screen.getByRole("button", {
+			name: "Waiting worker, Worker, Working, Queued",
+		});
+		expect(node).toHaveAttribute("data-scheduling-state", "queued");
+		expect(node.querySelector('[data-scheduling-badge="queued"]')).toHaveTextContent("Queued");
+	});
+
+	it("names the blocked reason and carries it as the node title", () => {
+		const sessions = [
+			makeSession({
+				id: "blocked",
+				title: "Blocked worker",
+				createdAt: "2026-01-01T00:00:00Z",
+				schedulingState: "blocked",
+				blockedReason: "dependency_pending",
+			}),
+		];
+		renderCanvas(sessions);
+
+		const node = screen.getByRole("button", {
+			name: "Blocked worker, Worker, Working, Blocked, Waiting for a dependency",
+		});
+		expect(node).toHaveAttribute("data-scheduling-state", "blocked");
+		expect(node).toHaveAttribute("title", "Waiting for a dependency");
+		expect(node.querySelector('[data-scheduling-badge="blocked"]')).toHaveTextContent("Blocked");
+	});
+});
+
+describe("SessionGraphCanvas hidden dependencies", () => {
+	it("counts a dependency the graph is not drawing", () => {
+		const sessions = [
+			makeSession({ id: "a", title: "Foundation", createdAt: "2026-01-01T00:00:00Z" }),
+			makeSession({
+				id: "b",
+				title: "Follow-up",
+				createdAt: "2026-01-01T00:01:00Z",
+				dependsOn: [{ sessionId: "a", requiredState: "merged", satisfied: false }],
+			}),
+		];
+		const graph = buildSessionGraph(sessions, {
+			includeArchived: false,
+			showDependencies: false,
+		});
+		render(<SessionGraphCanvas graph={graph} onOpenSession={vi.fn()} />);
+
+		expect(graph.edges.filter((edge) => edge.kind === "depends")).toHaveLength(0);
+		expect(screen.getByTestId("session-graph-hidden-dependencies")).toHaveTextContent(
+			"1 hidden dependency",
+		);
+	});
+});
