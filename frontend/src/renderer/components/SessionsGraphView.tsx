@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { ProjectBoardEmpty } from "./BoardEmptyStates";
+import { DagRunHeader } from "./DagRunHeader";
 import { SessionGraphCanvas } from "./SessionGraphCanvas";
 import { TopbarButton } from "./TopbarButton";
 import { buildSessionGraph, type SessionGraphLayout } from "../lib/session-graph";
@@ -16,6 +17,8 @@ export function SessionsGraphView({
 	onLayoutChange,
 	showDependencies = true,
 	onShowDependenciesChange,
+	dagRunId,
+	onRunClear,
 }: {
 	sessions: readonly WorkspaceSession[];
 	showArchived: boolean;
@@ -27,11 +30,14 @@ export function SessionsGraphView({
 	/** Whether dependency edges are drawn. */
 	showDependencies?: boolean;
 	onShowDependenciesChange?: (show: boolean) => void;
+	/** Filter the graph to one DAG run and show its status header. */
+	dagRunId?: string;
+	onRunClear?: () => void;
 }) {
 	const { t } = useTranslation();
 	const graph = useMemo(
-		() => buildSessionGraph(sessions, { includeArchived: showArchived, layout, showDependencies }),
-		[sessions, showArchived, layout, showDependencies],
+		() => buildSessionGraph(sessions, { includeArchived: showArchived, layout, showDependencies, dagRunId }),
+		[sessions, showArchived, layout, showDependencies, dagRunId],
 	);
 	const allArchivedHidden =
 		!showArchived && sessions.length > 0 && sessions.every(isArchivedSession);
@@ -82,6 +88,7 @@ export function SessionsGraphView({
 
 	return (
 		<div className="flex h-full min-h-0 flex-col">
+			{dagRunId ? <DagRunHeader dagRunId={dagRunId} onClear={onRunClear} /> : null}
 			<div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
 				<TopbarButton
 					variant="secondary"

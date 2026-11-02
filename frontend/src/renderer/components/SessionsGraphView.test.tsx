@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { PullRequestFacts, WorkspaceSession } from "../types/workspace";
 import { SessionsGraphView } from "./SessionsGraphView";
 
+const { useDagRunQueryMock } = vi.hoisted(() => ({ useDagRunQueryMock: vi.fn() }));
+vi.mock("../hooks/useDagRunQuery", () => ({ useDagRunQuery: useDagRunQueryMock }));
+
 function makeSession(
 	overrides: Partial<WorkspaceSession> & Pick<WorkspaceSession, "id">,
 ): WorkspaceSession {
@@ -228,5 +231,48 @@ describe("SessionsGraphView graph filters", () => {
 		const foundation = container.querySelector('[data-node-key="session:a"]') as HTMLElement;
 		expect(parseInt(join.style.top, 10)).toBeGreaterThan(parseInt(foundation.style.top, 10));
 		expect(container.querySelectorAll('[data-edge-kind="depends"]')).toHaveLength(2);
+	});
+});
+
+describe("SessionsGraphView DAG run filter", () => {
+	it("shows only the run's sessions and its header", () => {
+		useDagRunQueryMock.mockReturnValue({
+			data: {
+				id: "dag-1",
+				projectId: "p1",
+				name: "Feature X",
+				status: "running",
+				createdAt: "2026-01-01T00:00:00Z",
+				counts: { total: 2, queued: 0, blocked: 0, running: 2, completed: 0, failed: 0, cancelled: 0 },
+				nodes: [],
+			},
+			isPending: false,
+			isError: false,
+		});
+		const items = [
+			makeSession({ id: "a", title: "Node A", dagRunId: "dag-1" }),
+			makeSession({ id: "b", title: "Node B", dagRunId: "dag-1" }),
+			makeSession({ id: "outside", title: "Outside" }),
+		];
+		const onRunClear = vi.fn();
+
+		render(
+			<SessionsGraphView
+				sessions={items}
+				showArchived={false}
+				onShowArchivedChange={vi.fn()}
+				onOpenSession={vi.fn()}
+				dagRunId="dag-1"
+				onRunClear={onRunClear}
+			/>,
+		);
+
+		expect(screen.getByTestId("dag-run-header")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Node A/ })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Node B/ })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Outside/ })).not.toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "Clear run filter" }));
+		expect(onRunClear).toHaveBeenCalledTimes(1);
 	});
 });

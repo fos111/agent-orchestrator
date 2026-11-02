@@ -245,6 +245,10 @@ export type WorkspaceSession = {
 	kind?: SessionKind;
 	/** The same-project AO session that requested this spawn through `ao spawn`. */
 	parentSessionId?: string;
+	/** The DAG run this session belongs to, when it was created by `ao dag run`. */
+	dagRunId?: string;
+	/** This session's node id inside {@link dagRunId}. */
+	dagNodeId?: string;
 	/**
 	 * Where the dependency scheduler put this session. Absent means `immediate`,
 	 * the behavior of every session created without dependency scheduling.

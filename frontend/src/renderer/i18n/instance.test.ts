@@ -278,6 +278,35 @@ describe("app i18next instance", () => {
 		}
 	});
 
+	it("resolves every DAG run header label in every locale", () => {
+		const dagRunKeys = [
+			"shell.dagRun",
+			"shell.dagRunLoading",
+			"shell.dagRunUnavailable",
+			"shell.dagRunClear",
+			"shell.dagRunStatus.pending",
+			"shell.dagRunStatus.running",
+			"shell.dagRunStatus.completed",
+			"shell.dagRunStatus.failed",
+			"shell.dagRunStatus.cancelled",
+			"shell.dagRunNodesTotal",
+			"shell.dagRunNodesQueued",
+			"shell.dagRunNodesBlocked",
+			"shell.dagRunNodesRunning",
+			"shell.dagRunNodesCompleted",
+			"shell.dagRunNodesFailed",
+			"shell.dagRunNodesCancelled",
+		] as const;
+		for (const locale of APP_LOCALES) {
+			const i18n = createAppI18n(locale);
+			for (const key of dagRunKeys) {
+				const value = i18n.t(key, { count: 2 });
+				expect(value, `${locale}.${key}`).toBeTruthy();
+				expect(value, `${locale}.${key}`).not.toBe(key);
+			}
+		}
+	});
+
 	it("keeps interpolation variables aligned between locales", () => {
 		const variables = (message: string | string[]) => {
 			const msgs = Array.isArray(message) ? message : [message];

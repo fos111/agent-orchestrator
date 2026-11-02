@@ -106,6 +106,8 @@ export function toWorkspaceSession(
 		autoReviewEnabled: session.autoReviewEnabled ?? false,
 		kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,
 		parentSessionId: session.parentSessionId || undefined,
+		dagRunId: session.dagRunId || undefined,
+		dagNodeId: session.dagNodeId || undefined,
 		...toSessionScheduling(session),
 		mode: session.mode === "chat" ? "chat" : "tui",
 		branch: session.branch || undefined,
@@ -212,6 +214,8 @@ function toLocalWorkspaceSession(
 		autoReviewEnabled: session.autoReviewEnabled ?? false,
 		kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,
 		parentSessionId: session.parentSessionId || undefined,
+		dagRunId: session.dagRunId || undefined,
+		dagNodeId: session.dagNodeId || undefined,
 		...toSessionScheduling(session),
 		// Carried through verbatim: the session surface must render from
 		// the mode this session was created with, not from the current default.

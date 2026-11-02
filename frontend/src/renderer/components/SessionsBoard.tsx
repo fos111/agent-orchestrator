@@ -85,6 +85,9 @@ type SessionsBoardProps = {
 	/** Which graph edges the URL asks for. */
 	edges?: readonly BoardSearchEdge[];
 	onEdgesChange?: (edges: readonly BoardSearchEdge[]) => void;
+	/** A DAG run to filter the graph to. */
+	run?: string;
+	onRunChange?: (run: string | undefined) => void;
 };
 
 const isMac = isMacPlatform();
@@ -102,6 +105,8 @@ export function SessionsBoard({
 	onLayoutChange,
 	edges,
 	onEdgesChange,
+	run,
+	onRunChange,
 }: SessionsBoardProps) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
@@ -130,7 +135,8 @@ export function SessionsBoard({
 		preview: usesPreviewWorkspaceData,
 		cloudProject: workspace?.kind === CLOUD_PROJECT_KIND,
 	});
-	const activeView = canShowGraph && view === "graph" ? "graph" : "board";
+	// A run filter only exists on the graph, so it implies that view.
+	const activeView = canShowGraph && (view === "graph" || run !== undefined) ? "graph" : "board";
 	// A Freestyle cloud project's orchestrator starts in place (see
 	// OrchestratorStartingChat); its session does not exist yet, so the
 	// project's provider decides, as the control plane's does.
@@ -436,6 +442,8 @@ export function SessionsBoard({
 						onLayoutChange={onLayoutChange}
 						showDependencies={dependencyEdgeShown}
 						onShowDependenciesChange={onShowDependenciesChange}
+						dagRunId={run}
+						onRunClear={onRunChange ? () => onRunChange(undefined) : undefined}
 					/>
 				) : showProjectEmpty ? (
 					<ProjectBoardEmpty actions={<ProjectBoardActions actions={projectActions} placement="empty" />} />

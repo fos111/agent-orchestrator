@@ -440,3 +440,56 @@ describe("buildSessionGraph dependency edges", () => {
 		}
 	});
 });
+
+describe("buildSessionGraph DAG run filter", () => {
+	it("shows only the sessions that belong to the selected run", () => {
+		const graph = buildSessionGraph(
+			[
+				makeWorker("a", "2026-01-01T00:00:00Z", undefined, { dagRunId: "dag-1", dagNodeId: "a" }),
+				makeWorker("b", "2026-01-01T00:01:00Z", undefined, { dagRunId: "dag-1", dagNodeId: "b" }),
+				makeWorker("outside", "2026-01-01T00:02:00Z"),
+				makeWorker("other-run", "2026-01-01T00:03:00Z", undefined, { dagRunId: "dag-2" }),
+			],
+			{ includeArchived: false, dagRunId: "dag-1" },
+		);
+
+		expect(graph.nodes.map((node) => node.session.id).sort()).toEqual(["a", "b"]);
+	});
+
+	it("keeps an archived member of the run visible even when archived are hidden", () => {
+		const graph = buildSessionGraph(
+			[
+				makeWorker("done", "2026-01-01T00:00:00Z", undefined, {
+					dagRunId: "dag-1",
+					status: "terminated",
+					isTerminated: true,
+					kanbanColumn: "archive",
+				}),
+			],
+			{ includeArchived: false, dagRunId: "dag-1" },
+		);
+
+		expect(graph.nodes).toHaveLength(1);
+		expect(graph.nodes[0].contextOnly).toBe(false);
+	});
+
+	it("reports an in-run dependency that lives outside the run as filtered", () => {
+		const graph = buildSessionGraph(
+			[
+				makeWorker("outside", "2026-01-01T00:00:00Z"),
+				makeWorker("inside", "2026-01-01T00:01:00Z", undefined, {
+					dagRunId: "dag-1",
+					dependsOn: [{ sessionId: "outside", requiredState: "merged", satisfied: false }],
+				}),
+			],
+			{ includeArchived: false, dagRunId: "dag-1" },
+		);
+
+		expect(graph.nodes.map((node) => node.session.id)).toEqual(["inside"]);
+		expect(graph.edges.filter((edge) => edge.kind === "depends")).toHaveLength(0);
+		expect(graph.droppedEdges).toContainEqual(
+			expect.objectContaining({ from: "session:outside", to: "session:inside", reason: "filtered" }),
+		);
+		expect(graph.nodes[0].hiddenDependencyCount).toBe(1);
+	});
+});
