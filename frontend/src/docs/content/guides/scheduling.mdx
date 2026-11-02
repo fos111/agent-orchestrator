@@ -1,0 +1,283 @@
+---
+title: Dependencies, DAG runs, and teams
+description: Queue dependent work, submit DAG runs, and coordinate a team under project and team limits.
+---
+
+A session does not have to start the moment you create it. You can make a worker wait for another session to reach a required state, submit a set of related workers as one DAG run, and group workers under an orchestrator as a team. Queued work is durable: it survives a daemon restart, and a blocked session is visible on the board with the reason it cannot start.
+
+This guide covers dependencies, completion, scheduling states, limits, DAG runs, and teams. The scheduling fields are additive; sessions without dependencies keep the existing immediate spawn behavior.
+
+## Dependencies
+
+Create a worker with one or more dependencies:
+
+```bash
+ao spawn --project ao --name "test API" \
+  --prompt "Add integration tests for the new endpoint." \
+  --depends-on ao-123 --depends-on ao-124 \
+  --dependency-state merged
+```
+
+- `--depends-on` is repeatable and accepts a worker session ID in the same project.
+- `--dependency-state` applies one required state to every dependency on that spawn. Values are `ready`, `merged`, and `completed`.
+- When you omit the state, the project's `defaultDependencyState` applies (`auto` by default). `auto` infers each edge from the dependency's output type.
+- The API can set a different state on each edge; the CLI flag cannot.
+
+The new session appears in the board's **Queue** strip, not in a kanban lane. It has no worktree, no terminal, and no agent process until it is admitted.
+
+The API accepts a structured list so a DAG submission can set a state per edge:
+
+```json
+{
+  "dependsOn": [
+    { "sessionId": "ao-123", "requiredState": "merged" },
+    { "sessionId": "ao-124", "requiredState": "ready" }
+  ]
+}
+```
+
+The flat form `dependsOnSessionIds` plus `requiredDependencyState` is accepted for CLI compatibility. Do not send both forms in one request.
+
+### Required states
+
+| Required state | Satisfied when |
+| --- | --- |
+| `ready` | The dependency's board column is `ready`. This includes merged, closed, approved, and mergeable pull requests. |
+| `merged` | The dependency has at least one attributed pull request and every attributed pull request is merged. |
+| `completed` | The dependency has an explicit completion timestamp. |
+
+`ready` deliberately treats a pull request closed without merge as ready because the board already does. Use `merged` when the team needs a strict merge.
+
+Defaults by output type:
+
+- A dependency with output type `pr` or `pr_artifact` defaults to `merged`.
+- A dependency with output type `artifact` or `none` defaults to `completed`.
+- You can override the state per edge.
+
+### Validation rules
+
+- Dependencies must be worker sessions in the same project. An orchestrator cannot be a dependency.
+- A session cannot depend on itself, repeat a dependency, or create a cycle.
+- A session can have at most `maxDependenciesPerSession` incoming edges, 16 by default.
+- Orchestrators reject dependencies in v1. A projectless `--standalone` worker also rejects them.
+- A worker in a registered project does not need an orchestrator ancestor to depend on another session. A worker with no orchestrator ancestor simply has no team, so the team limit never applies to it.
+- Dependencies are immutable after creation in v1. Cancel the queued session and recreate it to change them.
+
+## Scheduling states
+
+| State | Meaning | Workspace | Agent |
+| --- | --- | --- | --- |
+| `immediate` | Existing behavior, or a scheduled session that has launched. No dependency scheduling. | Created at spawn | Launched at spawn |
+| `queued` | Dependencies are satisfied; waiting for the scheduler. | None | None |
+| `blocked` | Cannot be admitted yet: dependencies, a limit, or a failure. | None | None |
+| `admitted` | The scheduler authorized launch. Provisioning or running. | Creating | Starting |
+| `cancelled` | Cancelled before launch. | None | None |
+
+A blocked session is not dead. Orchestrator re-evaluates it when a dependency changes, when a slot frees, or on the next reconcile tick.
+
+### Provision state
+
+`provisionState` reports start-up progress independently of the scheduling state:
+
+| Provision state | Meaning |
+| --- | --- |
+| `queued` | Read-model value for a queued or blocked session: the row exists, but it owns no workspace and no agent. |
+| `provisioning` | The session was admitted and is being built. |
+| `ready` | The workspace and agent exist, or the session is no longer launching. |
+| `failed` | Provisioning or launch failed. |
+
+Admission sets the provision state to `provisioning`. A successful launch moves the scheduling state to `immediate` and the provision state to `ready`. A failed launch leaves the session `blocked` with reason `launch_failed` and provision state `failed`. A queued or blocked row always reads back as `queued`, even though the storage column keeps its pre-scheduling value.
+
+### Blocked reasons
+
+| Reason | Meaning |
+| --- | --- |
+| `dependency_pending` | At least one dependency has not reached the required state. |
+| `dependency_failed` | A dependency terminated without success. |
+| `dependency_cancelled` | A dependency was cancelled. |
+| `dependency_missing` | A dependency row no longer exists. |
+| `dependency_cycle` | The stored graph is cyclic. |
+| `dependency_unsatisfiable` | The required state cannot be reached, for example `merged` on a session with no pull request and no pull-request output. |
+| `project_limit` | The project active-session limit is full. |
+| `team_limit` | The team active-worker limit is full. |
+| `launch_failed` | Admission succeeded but provisioning or launch failed. |
+| `invalid` | Any other validation failure. |
+
+The queue strip, graph node, and session detail panel show the reason. A failed or cancelled dependency blocks its dependents; it does not cancel them.
+
+`launch_failed` is the one blocked reason the scheduler skips on later passes, so a broken launch is not retried in a loop. Fix the cause, then retry explicitly with `ao session admit <id>` (or `--force` to bypass dependencies and limits).
+
+## Completion
+
+Pull-request sessions do not need a separate completion command. Their pull-request facts drive `ready` and `merged`.
+
+Artifact and no-pull-request sessions need an explicit signal:
+
+```bash
+ao session complete ao-123 --note "Artifact published and reviewed."
+```
+
+Completion is idempotent and sets the session's completion timestamp. The API is `POST /api/v1/sessions/{sessionId}/complete`. Orchestrator does not infer completion from artifact delivery in v1; call the command when the work is done. The `--note` text is echoed in the command confirmation only; it is not stored with the completion.
+
+## Admission, force, and cancel
+
+The scheduler works in creation order:
+
+1. Load queued and blocked sessions for a project, except sessions blocked by `launch_failed`.
+2. Recompute each dependency's satisfaction.
+3. Mark unsatisfied sessions blocked with a reason and satisfied sessions queued.
+4. Count active sessions in the project and active workers in the team.
+5. Admit the oldest ready sessions up to the limits.
+6. Persist admission with a compare-and-set update, then provision outside the database transaction.
+
+Admission is idempotent. A crash after the database commit but before launch is recovered on startup: an admitted session with no workspace and no runtime is launched again, and a per-session launch lock prevents two launchers in one daemon.
+
+To start a blocked session anyway:
+
+```bash
+ao session admit ao-130 --force
+```
+
+`--force` bypasses dependencies and limits and records an admission override, which the session detail shows. Without `--force`, the command re-evaluates dependencies and limits like a normal reconcile.
+
+Cancelling a queued or blocked session marks it `cancelled` and terminates the row without workspace cleanup:
+
+```bash
+ao session kill ao-130
+```
+
+Killing an admitted or running session keeps the existing behavior. Cancelling a dependency blocks its dependents; it does not cancel them.
+
+## Limits
+
+Project config gains a `scheduling` block:
+
+```json
+{
+  "scheduling": {
+    "maxActiveSessions": 0,
+    "maxActivePerTeam": 4,
+    "maxDependenciesPerSession": 16,
+    "maxDagNodesPerRun": 64,
+    "defaultDependencyState": "auto"
+  }
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `maxActiveSessions` | `0` | Active sessions in the project. `0` means unlimited. |
+| `maxActivePerTeam` | `4` | Active worker sessions in one orchestrator subtree. The orchestrator does not count. |
+| `maxDependenciesPerSession` | `16` | Hard cap on incoming edges. |
+| `maxDagNodesPerRun` | `64` | Hard cap on a DAG run. |
+| `defaultDependencyState` | `auto` | `auto` applies the output-type rule above; `ready`, `merged`, or `completed` applies that state to every edge that does not name one. |
+
+Active means a session that is not terminated and whose scheduling state is `immediate` or `admitted`. Hidden task-preparation rows never count. A queued or blocked session is not active.
+
+Limits apply only to scheduler admissions. Existing active sessions are never killed or paused, and a team already above its limit simply admits no new queued worker until it drops below the limit. The project limit admits in FIFO order, by `created_at` then `id`.
+
+## DAG runs
+
+A DAG run submits related workers atomically:
+
+```json
+{
+  "name": "feature-x",
+  "nodes": [
+    {
+      "id": "build",
+      "name": "Build API",
+      "prompt": "Implement the endpoint.",
+      "harness": "claude-code",
+      "dependsOn": []
+    },
+    {
+      "id": "test",
+      "name": "Test API",
+      "prompt": "Add integration tests.",
+      "harness": "claude-code",
+      "dependsOn": ["build"],
+      "requiredState": "merged"
+    }
+  ]
+}
+```
+
+```bash
+ao dag run --project ao --file feature-x.json
+ao dag run --project ao --file - < feature-x.json
+ao dag status dag-123
+ao dag cancel dag-123
+ao dag cancel dag-123 --include-active
+```
+
+`ao dag run` accepts `--file -` to read the graph from stdin. `run`, `status`, and `cancel` all accept `--json`.
+
+- DAG nodes are worker sessions with no parent session; the run coordinates them. Orchestrators cannot be nodes.
+- Node IDs are unique within the run, and every `dependsOn` entry names a node in the same run.
+- A node's `requiredState` applies to every dependency of that node. When omitted, artifact nodes default to `completed` and all other nodes default to `merged`.
+- Orchestrator validates cycles, unknown nodes, self-edges, duplicate IDs, and limits before creating any row.
+- All nodes are created in one transaction in a non-admitted state with a DAG run ID and node ID.
+
+Run status is derived:
+
+| Status | Meaning |
+| --- | --- |
+| `pending` | No node has been admitted and no node has failed terminally. Nodes are queued, or blocked on in-run dependencies. |
+| `running` | At least one node is admitted. |
+| `completed` | Every node reached terminal success. |
+| `failed` | A node failed, or a node is blocked by a failed, cancelled, missing, unsatisfiable, invalid, or launch-failed dependency, and no node is admitted. |
+| `cancelled` | The user cancelled the run. Nodes admitted at cancellation time keep running and do not clear the status. |
+
+Cancelling a run cancels its queued and blocked nodes. Active nodes keep running unless you pass `--include-active`; their later completion does not clear the cancelled status. There is no pause, resume, or in-place retry in v1. Recreate a failed node or force it.
+
+## Teams
+
+A team is the subtree rooted at an orchestrator session. There is no team creation step and no stored team definition; every team is derived from the spawn tree.
+
+- The team root is the nearest ancestor with kind `orchestrator`; an orchestrator is its own root.
+- A worker with no orchestrator ancestor, such as a standalone or desktop New Task worker, has no team. DAG run nodes are coordinated by their run, not a team.
+- A terminated orchestrator does not destroy the team; the spawn tree and its non-terminated members still derive the same root.
+- Team members are all non-terminated sessions in the subtree. The team limit counts active workers only; the lead is exempt.
+
+```bash
+ao team ls --project ao
+ao team status ao-100
+ao team message ao-100 "Rebase on main before continuing."
+```
+
+`ao team` also answers to `ao teams`, and every subcommand accepts `--json`. `ao team status` shows the lead, the non-terminated members, and active-worker usage against the limit.
+
+`ao team message` broadcasts to every non-terminated member except the sender. Orchestrator records the broadcast and per-member delivery results best-effort. There is no unread inbox in v1, and there is no auto-shutdown, member removal, or membership mutation.
+
+## Board and graph
+
+- Queued and blocked sessions appear in a collapsible **Queue** strip above the lanes. The strip shows name, reason, dependency count, and wait time, with an **Admit now** button that opens the forced-admission confirmation. It is hidden when the queue is empty.
+- The graph draws dependency edges alongside spawn and delivery edges. Toggle edge types, and switch to dependency layout for a DAG run.
+- A team header shows the orchestrator, member count, limit usage, **Message team**, and a clear-filter action when the board is filtered to a team.
+- Filter the board and graph with `?team=<rootSessionId>`, `?run=<dagRunId>`, `?layout=dependency` (spawn is the default), and `?edges=spawn,depends,delivers`.
+- The session detail panel lists dependencies, their required state, satisfaction, dependents, and the blocked reason. The graph's edges are hidden from assistive technology; the detail list is the accessible source.
+- Standalone workers and desktop New Task workers show no team header and no dependency controls.
+
+Sessions without dependencies keep the existing board, archive panel, and spawn graph behavior.
+
+## Restart and recovery
+
+Queued and blocked sessions are persisted, so a daemon restart preserves them and does not launch them early. On startup, Orchestrator reconciles every project. An admitted session with no workspace and no runtime is relaunched under the per-session launch lock; an admitted session that already owns a workspace or a runtime is marked launched instead of being relaunched, so recovery cannot build a second workspace.
+
+While queued or blocked work exists, Orchestrator also reconciles every 15 seconds to cover missed events and pull-request polling gaps, and debounces event-driven reconciles by 100 ms so a burst of pull-request updates does not cause a reconcile storm.
+
+## Troubleshooting blocked work
+
+Scheduling has no counters or long-blocked warning in this version. Orchestrator emits `ao.session.spawned` when a session row is created (including a queued reservation), `ao.session.spawn_failed` when the create fails, and `ao.session.relaunch_failed` when an agent resume fails. A scheduled launch failure is recorded on the session as `blocked(launch_failed)` with the provision error, and the daemon logs it.
+
+If a session stays blocked:
+
+1. Read the reason in the queue strip, graph node, or detail panel.
+2. For `dependency_pending`, check the dependency's board state and required state.
+3. For `project_limit` or `team_limit`, wait for an active session to finish or raise the limit in project settings.
+4. For `dependency_failed`, `dependency_cancelled`, or `dependency_missing`, recreate the dependency or force-admit the dependent if it should proceed.
+5. For `launch_failed`, fix the provisioning cause, then retry with `ao session admit <id>`.
+6. Use `ao session admit <id> --force` only when you intend to bypass dependencies and limits; the override is recorded.
+
+Cancel a queued session you no longer need with `ao session kill <id>`; it terminates without workspace cleanup.
